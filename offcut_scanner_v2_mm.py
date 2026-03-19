@@ -16,6 +16,8 @@ MIN_HEIGHT_MM = 8
 MIN_CONTOUR_AREA_PX = 5000
 APPROX_EPSILON_RATIO = 0.01
 HEIGHT_PERCENTILE = 95
+DEPTH_SAMPLE_RADIUS_PX = 2
+MIN_BED_PLANE_SCALE = 0.85
 
 baseline_depth_mm = None
 
@@ -144,6 +146,60 @@ def depth_frame_to_mm(depth_frame, depth_scale):
     return depth_raw * depth_scale * 1000.0
 
 
+def sample_depth_mm(depth_map_mm, point_px, radius_px=DEPTH_SAMPLE_RADIUS_PX):
+    x = int(round(point_px[0]))
+    y = int(round(point_px[1]))
+
+    x0 = max(0, x - radius_px)
+    x1 = min(depth_map_mm.shape[1], x + radius_px + 1)
+    y0 = max(0, y - radius_px)
+    y1 = min(depth_map_mm.shape[0], y + radius_px + 1)
+
+    window = depth_map_mm[y0:y1, x0:x1]
+    valid = window[window > 0]
+    if valid.size == 0:
+        return 0.0
+
+    return float(np.median(valid))
+
+
+def estimate_bed_depth_mm(baseline_depth_mm, bed_points_mm, H_inv):
+    bed_outline_px = transform_points_mm_to_px(bed_points_mm, H_inv).astype(np.int32)
+    mask = np.zeros(baseline_depth_mm.shape, dtype=np.uint8)
+    cv2.fillPoly(mask, [bed_outline_px], 255)
+
+    bed_depths = baseline_depth_mm[mask > 0]
+    bed_depths = bed_depths[bed_depths > 0]
+    if bed_depths.size == 0:
+        return 0.0
+
+    return float(np.median(bed_depths))
+
+
+def compensate_vertices_to_bed_plane(vertices_px, current_depth_mm, bed_depth_mm, principal_point_px):
+    corrected_vertices_px = []
+    vertex_depths_mm = []
+
+    cx, cy = float(principal_point_px[0]), float(principal_point_px[1])
+
+    for vertex_px in vertices_px:
+        vertex_depth_mm = sample_depth_mm(current_depth_mm, vertex_px)
+        vertex_depths_mm.append(vertex_depth_mm)
+
+        if vertex_depth_mm <= 0 or bed_depth_mm <= 0:
+            corrected_vertices_px.append([float(vertex_px[0]), float(vertex_px[1])])
+            continue
+
+        scale = vertex_depth_mm / bed_depth_mm
+        scale = float(np.clip(scale, MIN_BED_PLANE_SCALE, 1.0))
+
+        corrected_x = cx + (float(vertex_px[0]) - cx) * scale
+        corrected_y = cy + (float(vertex_px[1]) - cy) * scale
+        corrected_vertices_px.append([corrected_x, corrected_y])
+
+    return corrected_vertices_px, vertex_depths_mm
+
+
 def create_pipeline():
     pipeline = rs.pipeline()
     config = rs.config()
@@ -154,13 +210,15 @@ def create_pipeline():
 
     depth_sensor = profile.get_device().first_depth_sensor()
     depth_scale = depth_sensor.get_depth_scale()
+    color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile()
+    color_intrinsics = color_stream.get_intrinsics()
 
     align = rs.align(rs.stream.color)
     spatial = rs.spatial_filter()
     temporal = rs.temporal_filter()
     hole_filling = rs.hole_filling_filter()
 
-    return pipeline, align, depth_scale, spatial, temporal, hole_filling
+    return pipeline, align, depth_scale, spatial, temporal, hole_filling, color_intrinsics
 
 
 def process_frames(frames, align, spatial, temporal, hole_filling):
@@ -260,7 +318,8 @@ def draw_mm_overlay(display, points_mm, H_inv, shape_type):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
 
 
-def save_scan(color_image, mask, contour, vertices_px, vertices_mm, shape_type, diff_mm, bed_points_mm, H_inv):
+def save_scan(color_image, mask, contour, vertices_px, corrected_vertices_px, vertices_mm, shape_type,
+              diff_mm, bed_points_mm, H_inv, bed_depth_mm, vertex_depths_mm):
     ts = timestamp_id()
 
     points_mm = np.array(vertices_mm, dtype=np.float32)
@@ -276,6 +335,10 @@ def save_scan(color_image, mask, contour, vertices_px, vertices_mm, shape_type, 
         cv2.putText(preview, str(i + 1), (int(vx) + 6, int(vy) - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
 
+    if corrected_vertices_px:
+        corrected_poly = np.array(corrected_vertices_px, dtype=np.int32)
+        cv2.polylines(preview, [corrected_poly], True, (255, 0, 255), 2)
+
     representative_height_mm = percentile_height_mm(diff_mm, mask)
 
     payload = {
@@ -289,6 +352,10 @@ def save_scan(color_image, mask, contour, vertices_px, vertices_mm, shape_type, 
         "axis_aligned_bbox_w_mm": round(summary["axis_aligned_bbox_w_mm"], 1),
         "axis_aligned_bbox_h_mm": round(summary["axis_aligned_bbox_h_mm"], 1),
         "edge_lengths_mm": [round(length, 1) for length in summary["edge_lengths_mm"]],
+        "vertices_px": [[round(float(x), 1), round(float(y), 1)] for x, y in vertices_px],
+        "vertices_px_bed_plane": [[round(float(x), 1), round(float(y), 1)] for x, y in corrected_vertices_px],
+        "vertex_depths_mm": [round(float(depth), 1) for depth in vertex_depths_mm],
+        "bed_depth_mm": round(float(bed_depth_mm), 1),
         "vertices_mm": [[round(float(x), 1), round(float(y), 1)] for x, y in vertices_mm],
         "svg_path_data": mm_points_to_svg_path(vertices_mm),
         "height_percentile": HEIGHT_PERCENTILE,
@@ -316,7 +383,8 @@ def main():
     global baseline_depth_mm
 
     H, H_inv, bed_points_mm = load_calibration()
-    pipeline, align, depth_scale, spatial, temporal, hole_filling = create_pipeline()
+    pipeline, align, depth_scale, spatial, temporal, hole_filling, color_intrinsics = create_pipeline()
+    principal_point_px = np.array([color_intrinsics.ppx, color_intrinsics.ppy], dtype=np.float32)
 
     print("Camera started.")
     print("Controls:")
@@ -338,18 +406,28 @@ def main():
 
             contour = None
             vertices_px = []
+            corrected_vertices_px = []
+            vertex_depths_mm = []
             vertices_mm = []
             shape_type = None
             diff_mm = None
+            bed_depth_mm = 0.0
 
             if baseline_depth_mm is not None:
+                bed_depth_mm = estimate_bed_depth_mm(baseline_depth_mm, bed_points_mm, H_inv)
                 mask, diff_mm = build_mask(current_depth_mm, baseline_depth_mm)
                 mask_display = mask
                 contour = find_main_contour(mask)
 
                 if contour is not None:
                     vertices_px = contour_vertices(contour)
-                    points_mm = transform_points_px_to_mm(vertices_px, H)
+                    corrected_vertices_px, vertex_depths_mm = compensate_vertices_to_bed_plane(
+                        vertices_px,
+                        current_depth_mm,
+                        bed_depth_mm,
+                        principal_point_px,
+                    )
+                    points_mm = transform_points_px_to_mm(corrected_vertices_px, H)
                     vertices_mm = [[float(x), float(y)] for x, y in points_mm]
                     shape_type = classify_shape(vertices_mm)
                     summary = measurement_summary(np.array(vertices_mm, dtype=np.float32), shape_type)
@@ -362,6 +440,10 @@ def main():
                         cv2.circle(display, (int(vx), int(vy)), 4, (0, 0, 255), -1)
                         cv2.putText(display, str(i + 1), (int(vx) + 5, int(vy) - 5),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
+
+                    if corrected_vertices_px:
+                        corrected_poly = np.array(corrected_vertices_px, dtype=np.int32)
+                        cv2.polylines(display, [corrected_poly], True, (255, 0, 255), 2)
 
                     draw_mm_overlay(display, np.array(vertices_mm, dtype=np.float32), H_inv, shape_type)
 
@@ -389,7 +471,20 @@ def main():
                 print("Baseline captured.")
             elif key == ord("s"):
                 if contour is not None and diff_mm is not None:
-                    save_scan(color_image, mask_display, contour, vertices_px, vertices_mm, shape_type, diff_mm, bed_points_mm, H_inv)
+                    save_scan(
+                        color_image,
+                        mask_display,
+                        contour,
+                        vertices_px,
+                        corrected_vertices_px,
+                        vertices_mm,
+                        shape_type,
+                        diff_mm,
+                        bed_points_mm,
+                        H_inv,
+                        bed_depth_mm,
+                        vertex_depths_mm,
+                    )
                 else:
                     print("No valid contour to save.")
             elif key == ord("q"):
