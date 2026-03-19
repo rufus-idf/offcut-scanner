@@ -15,6 +15,9 @@ os.makedirs(CAPTURE_DIR, exist_ok=True)
 MIN_HEIGHT_MM = 8
 MIN_CONTOUR_AREA_PX = 5000
 APPROX_EPSILON_RATIO = 0.01
+HEIGHT_PERCENTILE = 95
+DEPTH_SAMPLE_RADIUS_PX = 2
+MIN_BED_PLANE_SCALE = 0.85
 
 baseline_depth_mm = None
 
@@ -42,6 +45,12 @@ def transform_points_px_to_mm(points_px, H):
     return pts_mm.reshape(-1, 2)
 
 
+def transform_points_mm_to_px(points_mm, H_inv):
+    pts = np.array(points_mm, dtype=np.float32).reshape(-1, 1, 2)
+    pts_px = cv2.perspectiveTransform(pts, H_inv)
+    return pts_px.reshape(-1, 2)
+
+
 def polygon_area_mm2(points_mm):
     pts = np.array(points_mm, dtype=np.float32).reshape(-1, 1, 2)
     return float(abs(cv2.contourArea(pts)))
@@ -55,6 +64,59 @@ def bbox_from_points_mm(points_mm):
     max_x = float(np.max(xs))
     max_y = float(np.max(ys))
     return min_x, min_y, max_x, max_y, max_x - min_x, max_y - min_y
+
+
+def polygon_edge_lengths_mm(points_mm):
+    if len(points_mm) < 2:
+        return []
+
+    lengths = []
+    for i in range(len(points_mm)):
+        p1 = points_mm[i]
+        p2 = points_mm[(i + 1) % len(points_mm)]
+        lengths.append(float(np.linalg.norm(p2 - p1)))
+    return lengths
+
+
+def rectangle_dimensions_mm(points_mm):
+    if len(points_mm) != 4:
+        return None
+
+    edge_lengths = polygon_edge_lengths_mm(points_mm)
+    pair_a = (edge_lengths[0] + edge_lengths[2]) / 2.0
+    pair_b = (edge_lengths[1] + edge_lengths[3]) / 2.0
+
+    width_mm = max(pair_a, pair_b)
+    height_mm = min(pair_a, pair_b)
+
+    return {
+        "width_mm": float(width_mm),
+        "height_mm": float(height_mm),
+        "edge_lengths_mm": edge_lengths,
+    }
+
+
+def measurement_summary(points_mm, shape_type):
+    min_x, min_y, max_x, max_y, axis_bbox_w_mm, axis_bbox_h_mm = bbox_from_points_mm(points_mm)
+
+    summary = {
+        "bbox_x_mm": min_x,
+        "bbox_y_mm": min_y,
+        "bbox_w_mm": axis_bbox_w_mm,
+        "bbox_h_mm": axis_bbox_h_mm,
+        "axis_aligned_bbox_w_mm": axis_bbox_w_mm,
+        "axis_aligned_bbox_h_mm": axis_bbox_h_mm,
+        "edge_lengths_mm": polygon_edge_lengths_mm(points_mm),
+    }
+
+    if shape_type == "RECT" and len(points_mm) == 4:
+        rect_dims = rectangle_dimensions_mm(points_mm)
+        if rect_dims is not None:
+            summary["bbox_w_mm"] = rect_dims["width_mm"]
+            summary["bbox_h_mm"] = rect_dims["height_mm"]
+            summary["edge_lengths_mm"] = rect_dims["edge_lengths_mm"]
+
+    return summary
 
 
 def classify_shape(vertices):
@@ -84,6 +146,60 @@ def depth_frame_to_mm(depth_frame, depth_scale):
     return depth_raw * depth_scale * 1000.0
 
 
+def sample_depth_mm(depth_map_mm, point_px, radius_px=DEPTH_SAMPLE_RADIUS_PX):
+    x = int(round(point_px[0]))
+    y = int(round(point_px[1]))
+
+    x0 = max(0, x - radius_px)
+    x1 = min(depth_map_mm.shape[1], x + radius_px + 1)
+    y0 = max(0, y - radius_px)
+    y1 = min(depth_map_mm.shape[0], y + radius_px + 1)
+
+    window = depth_map_mm[y0:y1, x0:x1]
+    valid = window[window > 0]
+    if valid.size == 0:
+        return 0.0
+
+    return float(np.median(valid))
+
+
+def estimate_bed_depth_mm(baseline_depth_mm, bed_points_mm, H_inv):
+    bed_outline_px = transform_points_mm_to_px(bed_points_mm, H_inv).astype(np.int32)
+    mask = np.zeros(baseline_depth_mm.shape, dtype=np.uint8)
+    cv2.fillPoly(mask, [bed_outline_px], 255)
+
+    bed_depths = baseline_depth_mm[mask > 0]
+    bed_depths = bed_depths[bed_depths > 0]
+    if bed_depths.size == 0:
+        return 0.0
+
+    return float(np.median(bed_depths))
+
+
+def compensate_vertices_to_bed_plane(vertices_px, current_depth_mm, bed_depth_mm, principal_point_px):
+    corrected_vertices_px = []
+    vertex_depths_mm = []
+
+    cx, cy = float(principal_point_px[0]), float(principal_point_px[1])
+
+    for vertex_px in vertices_px:
+        vertex_depth_mm = sample_depth_mm(current_depth_mm, vertex_px)
+        vertex_depths_mm.append(vertex_depth_mm)
+
+        if vertex_depth_mm <= 0 or bed_depth_mm <= 0:
+            corrected_vertices_px.append([float(vertex_px[0]), float(vertex_px[1])])
+            continue
+
+        scale = vertex_depth_mm / bed_depth_mm
+        scale = float(np.clip(scale, MIN_BED_PLANE_SCALE, 1.0))
+
+        corrected_x = cx + (float(vertex_px[0]) - cx) * scale
+        corrected_y = cy + (float(vertex_px[1]) - cy) * scale
+        corrected_vertices_px.append([corrected_x, corrected_y])
+
+    return corrected_vertices_px, vertex_depths_mm
+
+
 def create_pipeline():
     pipeline = rs.pipeline()
     config = rs.config()
@@ -94,13 +210,15 @@ def create_pipeline():
 
     depth_sensor = profile.get_device().first_depth_sensor()
     depth_scale = depth_sensor.get_depth_scale()
+    color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile()
+    color_intrinsics = color_stream.get_intrinsics()
 
     align = rs.align(rs.stream.color)
     spatial = rs.spatial_filter()
     temporal = rs.temporal_filter()
     hole_filling = rs.hole_filling_filter()
 
-    return pipeline, align, depth_scale, spatial, temporal, hole_filling
+    return pipeline, align, depth_scale, spatial, temporal, hole_filling, color_intrinsics
 
 
 def process_frames(frames, align, spatial, temporal, hole_filling):
@@ -153,36 +271,63 @@ def contour_vertices(contour):
     return [[float(pt[0][0]), float(pt[0][1])] for pt in approx]
 
 
-def draw_mm_overlay(display, points_mm, H_inv):
+def percentile_height_mm(diff_mm, mask, percentile=HEIGHT_PERCENTILE):
+    if not np.any(mask > 0):
+        return 0.0
+
+    valid_heights = diff_mm[mask > 0]
+    valid_heights = valid_heights[valid_heights > 0]
+    if valid_heights.size == 0:
+        return 0.0
+
+    return float(np.percentile(valid_heights, percentile))
+
+
+def draw_calibration_overlay(display, bed_points_mm, H_inv):
+    bed_outline_px = transform_points_mm_to_px(bed_points_mm, H_inv).astype(int)
+    cv2.polylines(display, [bed_outline_px], True, (0, 255, 255), 2)
+
+    for i, (px, py) in enumerate(bed_outline_px):
+        cv2.circle(display, (int(px), int(py)), 5, (0, 255, 255), -1)
+        cv2.putText(display, f"C{i + 1}", (int(px) + 8, int(py) - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
+
+    anchor_x, anchor_y = bed_outline_px[0]
+    cv2.putText(display, "Calibration area", (int(anchor_x) + 10, int(anchor_y) + 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
+
+
+def draw_mm_overlay(display, points_mm, H_inv, shape_type):
     if len(points_mm) == 0:
         return
 
-    min_x, min_y, max_x, max_y, w_mm, h_mm = bbox_from_points_mm(points_mm)
-    label = f"{w_mm:.0f}mm x {h_mm:.0f}mm"
+    summary = measurement_summary(points_mm, shape_type)
+    label = f"{summary['bbox_w_mm']:.0f}mm x {summary['bbox_h_mm']:.0f}mm"
 
     bbox_mm = np.array([
-        [min_x, min_y],
-        [max_x, min_y],
-        [max_x, max_y],
-        [min_x, max_y]
-    ], dtype=np.float32).reshape(-1, 1, 2)
+        [summary["bbox_x_mm"], summary["bbox_y_mm"]],
+        [summary["bbox_x_mm"] + summary["axis_aligned_bbox_w_mm"], summary["bbox_y_mm"]],
+        [summary["bbox_x_mm"] + summary["axis_aligned_bbox_w_mm"], summary["bbox_y_mm"] + summary["axis_aligned_bbox_h_mm"]],
+        [summary["bbox_x_mm"], summary["bbox_y_mm"] + summary["axis_aligned_bbox_h_mm"]]
+    ], dtype=np.float32)
 
-    bbox_px = cv2.perspectiveTransform(bbox_mm, H_inv).reshape(-1, 2).astype(int)
-
+    bbox_px = transform_points_mm_to_px(bbox_mm, H_inv).astype(int)
     cv2.polylines(display, [bbox_px], True, (255, 255, 0), 2)
     x, y = bbox_px[0]
-    cv2.putText(display, label, (x + 10, y + 25),
+    cv2.putText(display, label, (int(x) + 10, int(y) + 25),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
 
 
-def save_scan(color_image, mask, contour, vertices_px, vertices_mm, shape_type, diff_mm):
+def save_scan(color_image, mask, contour, vertices_px, corrected_vertices_px, vertices_mm, shape_type,
+              diff_mm, bed_points_mm, H_inv, bed_depth_mm, vertex_depths_mm):
     ts = timestamp_id()
 
     points_mm = np.array(vertices_mm, dtype=np.float32)
     area_mm2 = polygon_area_mm2(points_mm)
-    min_x, min_y, max_x, max_y, bbox_w_mm, bbox_h_mm = bbox_from_points_mm(points_mm)
+    summary = measurement_summary(points_mm, shape_type)
 
     preview = color_image.copy()
+    draw_calibration_overlay(preview, bed_points_mm, H_inv)
     cv2.drawContours(preview, [contour], -1, (0, 255, 0), 2)
 
     for i, (vx, vy) in enumerate(vertices_px):
@@ -190,19 +335,31 @@ def save_scan(color_image, mask, contour, vertices_px, vertices_mm, shape_type, 
         cv2.putText(preview, str(i + 1), (int(vx) + 6, int(vy) - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
 
-    max_height_mm = float(np.max(diff_mm[mask > 0])) if np.any(mask > 0) else 0.0
+    if corrected_vertices_px:
+        corrected_poly = np.array(corrected_vertices_px, dtype=np.int32)
+        cv2.polylines(preview, [corrected_poly], True, (255, 0, 255), 2)
+
+    representative_height_mm = percentile_height_mm(diff_mm, mask)
 
     payload = {
         "captured_at_utc": utc_now_str(),
         "shape_type": shape_type,
         "area_mm2": round(area_mm2, 1),
-        "bbox_x_mm": round(min_x, 1),
-        "bbox_y_mm": round(min_y, 1),
-        "bbox_w_mm": round(bbox_w_mm, 1),
-        "bbox_h_mm": round(bbox_h_mm, 1),
+        "bbox_x_mm": round(summary["bbox_x_mm"], 1),
+        "bbox_y_mm": round(summary["bbox_y_mm"], 1),
+        "bbox_w_mm": round(summary["bbox_w_mm"], 1),
+        "bbox_h_mm": round(summary["bbox_h_mm"], 1),
+        "axis_aligned_bbox_w_mm": round(summary["axis_aligned_bbox_w_mm"], 1),
+        "axis_aligned_bbox_h_mm": round(summary["axis_aligned_bbox_h_mm"], 1),
+        "edge_lengths_mm": [round(length, 1) for length in summary["edge_lengths_mm"]],
+        "vertices_px": [[round(float(x), 1), round(float(y), 1)] for x, y in vertices_px],
+        "vertices_px_bed_plane": [[round(float(x), 1), round(float(y), 1)] for x, y in corrected_vertices_px],
+        "vertex_depths_mm": [round(float(depth), 1) for depth in vertex_depths_mm],
+        "bed_depth_mm": round(float(bed_depth_mm), 1),
         "vertices_mm": [[round(float(x), 1), round(float(y), 1)] for x, y in vertices_mm],
         "svg_path_data": mm_points_to_svg_path(vertices_mm),
-        "max_height_mm_above_bed": round(max_height_mm, 2),
+        "height_percentile": HEIGHT_PERCENTILE,
+        "height_mm_above_bed_p95": round(representative_height_mm, 2),
     }
 
     image_path = os.path.join(CAPTURE_DIR, f"{ts}_preview.png")
@@ -226,7 +383,8 @@ def main():
     global baseline_depth_mm
 
     H, H_inv, bed_points_mm = load_calibration()
-    pipeline, align, depth_scale, spatial, temporal, hole_filling = create_pipeline()
+    pipeline, align, depth_scale, spatial, temporal, hole_filling, color_intrinsics = create_pipeline()
+    principal_point_px = np.array([color_intrinsics.ppx, color_intrinsics.ppy], dtype=np.float32)
 
     print("Camera started.")
     print("Controls:")
@@ -243,24 +401,38 @@ def main():
 
             current_depth_mm = depth_frame_to_mm(depth_frame, depth_scale)
             display = color_image.copy()
+            draw_calibration_overlay(display, bed_points_mm, H_inv)
             mask_display = np.zeros((480, 640), dtype=np.uint8)
 
             contour = None
             vertices_px = []
+            corrected_vertices_px = []
+            vertex_depths_mm = []
             vertices_mm = []
             shape_type = None
             diff_mm = None
+            bed_depth_mm = 0.0
 
             if baseline_depth_mm is not None:
+                bed_depth_mm = estimate_bed_depth_mm(baseline_depth_mm, bed_points_mm, H_inv)
                 mask, diff_mm = build_mask(current_depth_mm, baseline_depth_mm)
                 mask_display = mask
                 contour = find_main_contour(mask)
 
                 if contour is not None:
                     vertices_px = contour_vertices(contour)
-                    points_mm = transform_points_px_to_mm(vertices_px, H)
+                    corrected_vertices_px, vertex_depths_mm = compensate_vertices_to_bed_plane(
+                        vertices_px,
+                        current_depth_mm,
+                        bed_depth_mm,
+                        principal_point_px,
+                    )
+                    points_mm = transform_points_px_to_mm(corrected_vertices_px, H)
                     vertices_mm = [[float(x), float(y)] for x, y in points_mm]
                     shape_type = classify_shape(vertices_mm)
+                    summary = measurement_summary(np.array(vertices_mm, dtype=np.float32), shape_type)
+                    area_mm2 = polygon_area_mm2(np.array(vertices_mm, dtype=np.float32))
+                    representative_height_mm = percentile_height_mm(diff_mm, mask_display)
 
                     cv2.drawContours(display, [contour], -1, (0, 255, 0), 2)
 
@@ -269,12 +441,17 @@ def main():
                         cv2.putText(display, str(i + 1), (int(vx) + 5, int(vy) - 5),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
 
-                    draw_mm_overlay(display, np.array(vertices_mm, dtype=np.float32), H_inv)
+                    if corrected_vertices_px:
+                        corrected_poly = np.array(corrected_vertices_px, dtype=np.int32)
+                        cv2.polylines(display, [corrected_poly], True, (255, 0, 255), 2)
 
-                    area_mm2 = polygon_area_mm2(np.array(vertices_mm, dtype=np.float32))
-                    min_x, min_y, max_x, max_y, bbox_w_mm, bbox_h_mm = bbox_from_points_mm(np.array(vertices_mm, dtype=np.float32))
+                    draw_mm_overlay(display, np.array(vertices_mm, dtype=np.float32), H_inv, shape_type)
 
-                    label = f"{shape_type} | area={area_mm2:.0f} mm2 | bbox={bbox_w_mm:.0f} x {bbox_h_mm:.0f} mm"
+                    label = (
+                        f"{shape_type} | area={area_mm2:.0f} mm2 | "
+                        f"size={summary['bbox_w_mm']:.0f} x {summary['bbox_h_mm']:.0f} mm | "
+                        f"p{HEIGHT_PERCENTILE} height={representative_height_mm:.1f} mm"
+                    )
                     cv2.putText(display, label, (20, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
                 else:
@@ -294,7 +471,20 @@ def main():
                 print("Baseline captured.")
             elif key == ord("s"):
                 if contour is not None and diff_mm is not None:
-                    save_scan(color_image, mask_display, contour, vertices_px, vertices_mm, shape_type, diff_mm)
+                    save_scan(
+                        color_image,
+                        mask_display,
+                        contour,
+                        vertices_px,
+                        corrected_vertices_px,
+                        vertices_mm,
+                        shape_type,
+                        diff_mm,
+                        bed_points_mm,
+                        H_inv,
+                        bed_depth_mm,
+                        vertex_depths_mm,
+                    )
                 else:
                     print("No valid contour to save.")
             elif key == ord("q"):
