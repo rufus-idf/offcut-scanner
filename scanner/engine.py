@@ -1,7 +1,9 @@
 import json
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -29,9 +31,10 @@ class FrameView:
 
 
 class OffcutScannerEngine:
-    def __init__(self, capture_dir: str = "captures", calibration_file: str = "calibration.json"):
-        self.capture_dir = capture_dir
-        self.calibration_file = calibration_file
+    def __init__(self, capture_dir: str | None = None, calibration_file: str | None = None):
+        self.runtime_dir = self.default_runtime_dir()
+        self.capture_dir = str(self.resolve_runtime_path(capture_dir or "captures"))
+        self.calibration_file = str(self.resolve_runtime_path(calibration_file or "calibration.json"))
         os.makedirs(self.capture_dir, exist_ok=True)
 
         self.pipeline = None
@@ -53,6 +56,18 @@ class OffcutScannerEngine:
         self.latest_view = None
 
     @staticmethod
+    def default_runtime_dir():
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return Path(__file__).resolve().parent.parent
+
+    def resolve_runtime_path(self, path_value: str):
+        path = Path(path_value)
+        if path.is_absolute():
+            return path
+        return self.runtime_dir / path
+
+    @staticmethod
     def utc_now_str():
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -61,7 +76,14 @@ class OffcutScannerEngine:
         return datetime.now().strftime("%Y%m%d_%H%M%S")
 
     def load_calibration(self):
-        with open(self.calibration_file, "r", encoding="utf-8") as f:
+        calibration_path = Path(self.calibration_file)
+        if not calibration_path.exists():
+            raise FileNotFoundError(
+                f"Calibration file not found: {calibration_path}. "
+                "Place calibration.json next to the app or pass a custom path."
+            )
+
+        with calibration_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         self.H = np.array(data["homography_px_to_mm"], dtype=np.float32)
         self.H_inv = np.array(data["homography_mm_to_px"], dtype=np.float32)

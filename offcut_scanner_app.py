@@ -7,6 +7,7 @@ from app.main_window import MainWindow
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("Offcut Scanner")
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
