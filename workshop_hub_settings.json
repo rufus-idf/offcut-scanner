@@ -1,14 +1,14 @@
 {
   "material": "Bardolino MDF",
   "thickness_mm": 18.0,
-  "grade": "1",
-  "location": "1",
+  "grade": "",
+  "location": "workshop",
   "notes": "TEST",
-  "sheet_origin_job": "1",
-  "sheet_origin_index": "1",
+  "sheet_origin_job": "",
+  "sheet_origin_index": "",
   "min_internal_width_mm": "",
   "usable_score": "",
   "qty": 1,
-  "push_url": "https://script.google.com/a/macros/i-designfurniture.com/s/AKfycbzNTN2rTgnBEBTuCv3qljGM9wJUkJi6MRs-UM_CTbTJ6MLy-9m1JX6DbTKNrn3p06UTfw/exec",
+  "push_url": "https://script.googleusercontent.com/a/macros/i-designfurniture.com/echo?user_content_key=AWDtjMV4E_FpeqMzRVzpQ2DFdHXhiZOSpeZ72xm-_p_mqPxHzZBA89WpLAXuO6eFMnWX5_6TRjkiRb1tI6ttlFBmKk8PcIUcNayR_bAMNPCVgirRC_CU5r5ZJ9JM6NFlqPq5ga0oLNx1NQwaPfY6i_xLDKD5_EhgvHV2OizxIYVpQU2fDyHINxQiUmK3RvRzbsm3LVxCEsLvwjiYkPNDP-owLSc1_ycsPdkgLTwp4bJbERrp-NRcO-5sLxWIQJ0eDHchZkJ2p40qmABfbrtb9UwXWzvpDzV7IaR71uEBqFfPcbfvLAaIEJa8lrnCjXOhnAqvuPXtrbIl&lib=Mz0XJXSrSLe0wqkfR_LJXitNDHtFIQXus",
   "push_on_save": true
 }
