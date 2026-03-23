@@ -194,6 +194,10 @@ def post_workshop_bundle(push_url: str, bundle: dict[str, Any], timeout_seconds:
                 except json.JSONDecodeError:
                     parsed_body = body
 
+            if isinstance(parsed_body, dict) and parsed_body.get("ok") is False:
+                error_message = parsed_body.get("error") or "Unknown Apps Script error."
+                raise RuntimeError(f"Sheet push was rejected by Apps Script: {error_message}")
+
             return {
                 "status_code": response.status,
                 "body": parsed_body,

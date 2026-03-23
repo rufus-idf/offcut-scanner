@@ -74,23 +74,30 @@ function appendRows_(spreadsheet, tabName, headers, rows) {
   }
 
   const sheet = spreadsheet.getSheetByName(tabName) || spreadsheet.insertSheet(tabName);
-  ensureHeaders_(sheet, headers);
+  const sheetHeaders = ensureHeaders_(sheet, headers);
 
-  const values = rows.map((row) => headers.map((header) => normalizeCell_(row[header])));
-  sheet.getRange(sheet.getLastRow() + 1, 1, values.length, headers.length).setValues(values);
+  const values = rows.map((row) => sheetHeaders.map((header) => normalizeCell_(row[header])));
+  sheet.getRange(sheet.getLastRow() + 1, 1, values.length, sheetHeaders.length).setValues(values);
 }
 
 function ensureHeaders_(sheet, headers) {
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    return;
+    return headers;
   }
 
-  const existing = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-  const mismatch = headers.some((header, index) => existing[index] !== header);
-  if (mismatch) {
-    throw new Error(`Header mismatch in tab ${sheet.getName()}.`);
+  const existingWidth = Math.max(sheet.getLastColumn(), headers.length);
+  const existing = sheet.getRange(1, 1, 1, existingWidth).getValues()[0];
+  const normalizedExisting = existing.map((header) => String(header || '').trim());
+
+  const missingHeaders = headers.filter((header) => !normalizedExisting.includes(header));
+  if (missingHeaders.length > 0) {
+    const startColumn = normalizedExisting.length + 1;
+    sheet.getRange(1, startColumn, 1, missingHeaders.length).setValues([missingHeaders]);
+    normalizedExisting.push(...missingHeaders);
   }
+
+  return normalizedExisting;
 }
 
 function normalizeCell_(value) {
