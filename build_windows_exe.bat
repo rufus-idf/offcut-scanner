@@ -3,8 +3,13 @@ setlocal
 
 cd /d "%~dp0"
 
+set "PYTHON_EXE=python"
+if exist "%~dp0.venv\Scripts\python.exe" (
+  set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+)
+
 echo Building Offcut Scanner Windows executable...
-pyinstaller ^
+"%PYTHON_EXE%" -m PyInstaller ^
   --noconfirm ^
   --clean ^
   --windowed ^
@@ -14,6 +19,8 @@ pyinstaller ^
 if errorlevel 1 (
   echo.
   echo Build failed.
+  echo If PyInstaller is missing, run:
+  echo   "%PYTHON_EXE%" -m pip install pyinstaller
   exit /b 1
 )
 
