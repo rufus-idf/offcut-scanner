@@ -39,8 +39,13 @@ Why this route:
 9. Give access to the smallest audience that still works for your workshop deployment.
 10. Copy the deployed `/exec` URL.
 11. Open that `/exec` URL once in your browser. You should now get a small JSON health response instead of a `doGet` error.
-12. Paste that URL into the scanner app’s **Apps Script URL** field.
-13. Tick **Push to Google Sheet on save**.
+12. If your scanner build uses a hardcoded push target, update that constant in the app code when the deployment URL changes.
+13. In the scanner app, tick **Push to Google Sheet on save**.
+
+Important:
+
+- use the actual web-app `/exec` deployment URL for POST requests
+- do **not** use the long `script.googleusercontent.com/...` browser echo URL as the scanner app target
 
 ## What gets written where
 

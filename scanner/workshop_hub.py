@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_PUSH_URL = (
-    "https://script.googleusercontent.com/a/macros/i-designfurniture.com/echo"
-    "?user_content_key=AWDtjMV4E_FpeqMzRVzpQ2DFdHXhiZOSpeZ72xm-_p_mqPxHzZBA89WpLAXuO6eFMnWX5_6TRjkiRb1tI6ttlFBmKk8PcIUcNayR_bAMNPCVgirRC_CU5r5ZJ9JM6NFlqPq5ga0oLNx1NQwaPfY6i_xLDKD5_EhgvHV2OizxIYVpQU2fDyHINxQiUmK3RvRzbsm3LVxCEsLvwjiYkPNDP-owLSc1_ycsPdkgLTwp4bJbERrp-NRcO-5sLxWIQJ0eDHchZkJ2p40qmABfbrtb9UwXWzvpDzV7IaR71uEBqFfPcbfvLAaIEJa8lrnCjXOhnAqvuPXtrbIl&lib=Mz0XJXSrSLe0wqkfR_LJXitNDHtFIQXus"
+    "https://script.google.com/macros/s/"
+    "AKfycbzNTN2rTgnBEBTuCv3qljGM9wJUkJi6MRs-UM_CTbTJ6MLy-9m1JX6DbTKNrn3p06UTfw/exec"
 )
 
 INVENTORY_HEADERS = [
@@ -204,7 +204,13 @@ def post_workshop_bundle(push_url: str, bundle: dict[str, Any], timeout_seconds:
             raise RuntimeError(
                 "Sheet push failed with HTTP 401. The deployed Apps Script URL is rejecting "
                 "anonymous requests. Redeploy the web app with public access, or update the "
-                "hardcoded push URL to the current public googleusercontent endpoint."
+                "hardcoded push URL to the current public /exec deployment URL."
+            ) from exc
+        if exc.code == 405:
+            raise RuntimeError(
+                "Sheet push failed with HTTP 405. The app was pointed at the wrong Google "
+                "endpoint. Use the web app /exec deployment URL, not the browser-only "
+                "googleusercontent echo URL."
             ) from exc
         raise RuntimeError(f"Sheet push failed with HTTP {exc.code}: {error_body}") from exc
     except urllib.error.URLError as exc:
