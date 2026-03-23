@@ -499,7 +499,7 @@ class OffcutScannerEngine:
         )
         return self.latest_view
 
-    def save_scan_result(self, scan_result):
+    def save_scan_result(self, scan_result, workshop_bundle=None):
         if scan_result is None:
             raise RuntimeError("No scan result available to save.")
 
@@ -507,15 +507,20 @@ class OffcutScannerEngine:
         image_path = os.path.join(self.capture_dir, f"{ts}_preview.png")
         mask_path = os.path.join(self.capture_dir, f"{ts}_mask.png")
         json_path = os.path.join(self.capture_dir, f"{ts}_scan_mm.json")
+        workshop_json_path = os.path.join(self.capture_dir, f"{ts}_workshop_hub.json")
 
         cv2.imwrite(image_path, scan_result["preview_image"])
         cv2.imwrite(mask_path, scan_result["mask_image"])
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(scan_result["payload"], f, indent=2)
+        if workshop_bundle is not None:
+            with open(workshop_json_path, "w", encoding="utf-8") as f:
+                json.dump(workshop_bundle, f, indent=2)
 
         return {
             "image_path": image_path,
             "mask_path": mask_path,
             "json_path": json_path,
+            "workshop_json_path": workshop_json_path if workshop_bundle is not None else None,
             "payload": scan_result["payload"],
         }

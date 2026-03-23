@@ -9,17 +9,28 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QCheckBox,
     QPushButton,
     QPlainTextEdit,
     QSizePolicy,
+    QSpinBox,
+    QDoubleSpinBox,
     QSplitter,
     QVBoxLayout,
     QWidget,
+    QFormLayout,
 )
 
-from scanner import OffcutScannerEngine
+from scanner import (
+    OffcutScannerEngine,
+    build_workshop_bundle,
+    load_settings,
+    post_workshop_bundle,
+    save_settings,
+)
 
 
 class MainWindow(QMainWindow):
@@ -50,14 +61,42 @@ class MainWindow(QMainWindow):
         self.height_value = QLabel("-")
         self.calibration_value = QLabel("Not loaded")
         self.baseline_value = QLabel("Not captured")
+        self.export_status_value = QLabel("Not prepared")
 
         self.json_view = QPlainTextEdit()
         self.json_view.setReadOnly(True)
-        self.json_view.setPlaceholderText("Latest scan payload will appear here.")
+        self.json_view.setPlaceholderText("Latest Workshop Hub export bundle will appear here.")
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(200)
+
+        settings = load_settings()
+        self.material_input = QLineEdit(settings["material"])
+        self.thickness_input = QDoubleSpinBox()
+        self.thickness_input.setRange(0.0, 100.0)
+        self.thickness_input.setDecimals(1)
+        self.thickness_input.setSingleStep(0.5)
+        self.thickness_input.setValue(float(settings["thickness_mm"]))
+        self.qty_input = QSpinBox()
+        self.qty_input.setRange(1, 999)
+        self.qty_input.setValue(int(settings["qty"]))
+        self.grade_input = QLineEdit(settings["grade"])
+        self.location_input = QLineEdit(settings["location"])
+        self.sheet_origin_job_input = QLineEdit(settings["sheet_origin_job"])
+        self.sheet_origin_index_input = QLineEdit(str(settings["sheet_origin_index"]))
+        self.min_internal_width_input = QLineEdit(str(settings["min_internal_width_mm"]))
+        self.min_internal_width_input.setPlaceholderText("optional")
+        self.usable_score_input = QLineEdit(str(settings["usable_score"]))
+        self.usable_score_input.setPlaceholderText("optional")
+        self.notes_input = QPlainTextEdit()
+        self.notes_input.setPlainText(settings["notes"])
+        self.notes_input.setMaximumBlockCount(20)
+        self.notes_input.setMaximumHeight(90)
+        self.push_url_input = QLineEdit(settings["push_url"])
+        self.push_url_input.setPlaceholderText("https://script.google.com/macros/s/.../exec")
+        self.push_on_save_checkbox = QCheckBox("Push to Google Sheet on save")
+        self.push_on_save_checkbox.setChecked(bool(settings["push_on_save"]))
 
         self.start_button = QPushButton("Start Camera")
         self.stop_button = QPushButton("Stop Camera")
@@ -80,6 +119,33 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(False)
 
         self._build_layout()
+        self._connect_export_form()
+
+    def _connect_export_form(self):
+        widgets = [
+            self.material_input,
+            self.thickness_input,
+            self.qty_input,
+            self.grade_input,
+            self.location_input,
+            self.sheet_origin_job_input,
+            self.sheet_origin_index_input,
+            self.min_internal_width_input,
+            self.usable_score_input,
+            self.notes_input,
+            self.push_url_input,
+            self.push_on_save_checkbox,
+        ]
+        for widget in widgets:
+            signal = None
+            if hasattr(widget, "textChanged"):
+                signal = widget.textChanged
+            elif hasattr(widget, "valueChanged"):
+                signal = widget.valueChanged
+            elif hasattr(widget, "stateChanged"):
+                signal = widget.stateChanged
+            if signal is not None:
+                signal.connect(self.refresh_export_preview_from_active_view)
 
     def _build_layout(self):
         preview_container = QWidget()
@@ -109,6 +175,7 @@ class MainWindow(QMainWindow):
             ("Height", self.height_value),
             ("Calibration", self.calibration_value),
             ("Baseline", self.baseline_value),
+            ("Export", self.export_status_value),
         ]
         for row, (label_text, widget) in enumerate(rows):
             label = QLabel(label_text)
@@ -116,7 +183,22 @@ class MainWindow(QMainWindow):
             results_layout.addWidget(label, row, 0)
             results_layout.addWidget(widget, row, 1)
 
-        payload_box = QGroupBox("Scan Payload")
+        metadata_box = QGroupBox("Workshop Hub Export")
+        metadata_layout = QFormLayout(metadata_box)
+        metadata_layout.addRow("Material", self.material_input)
+        metadata_layout.addRow("Thickness (mm)", self.thickness_input)
+        metadata_layout.addRow("Qty", self.qty_input)
+        metadata_layout.addRow("Grade", self.grade_input)
+        metadata_layout.addRow("Location", self.location_input)
+        metadata_layout.addRow("Sheet Job", self.sheet_origin_job_input)
+        metadata_layout.addRow("Sheet Index", self.sheet_origin_index_input)
+        metadata_layout.addRow("Min Internal Width", self.min_internal_width_input)
+        metadata_layout.addRow("Usable Score", self.usable_score_input)
+        metadata_layout.addRow("Notes", self.notes_input)
+        metadata_layout.addRow("Apps Script URL", self.push_url_input)
+        metadata_layout.addRow("", self.push_on_save_checkbox)
+
+        payload_box = QGroupBox("Export Preview")
         payload_layout = QVBoxLayout(payload_box)
         payload_layout.addWidget(self.json_view)
 
@@ -128,6 +210,7 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         right_layout.addWidget(controls_box)
         right_layout.addWidget(results_box)
+        right_layout.addWidget(metadata_box)
         right_layout.addWidget(payload_box, stretch=1)
         right_layout.addWidget(log_box, stretch=1)
 
@@ -230,6 +313,7 @@ class MainWindow(QMainWindow):
             self.size_value.setText("-")
             self.area_value.setText("-")
             self.height_value.setText("-")
+            self.export_status_value.setText("Waiting for detection")
             self.json_view.clear()
             self.save_button.setEnabled(False)
             return
@@ -238,8 +322,69 @@ class MainWindow(QMainWindow):
         self.size_value.setText(f"{payload['bbox_w_mm']:.1f} x {payload['bbox_h_mm']:.1f} mm")
         self.area_value.setText(f"{payload['area_mm2']:.1f} mm²")
         self.height_value.setText(f"P95: {payload['height_mm_above_bed_p95']:.1f} mm")
-        self.json_view.setPlainText(json.dumps(payload, indent=2))
+        if self.thickness_input.value() == 0:
+            self.thickness_input.setValue(float(payload["height_mm_above_bed_p95"]))
+        try:
+            self.refresh_export_preview(payload)
+        except ValueError as exc:
+            self.export_status_value.setText(str(exc))
+            self.json_view.setPlainText(json.dumps({"scan_payload": payload}, indent=2))
         self.save_button.setEnabled(view.has_detection)
+
+    @staticmethod
+    def optional_float(text):
+        value = text.strip()
+        if value == "":
+            return ""
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid numeric value: {value}") from exc
+
+    def current_export_metadata(self):
+        return {
+            "material": self.material_input.text().strip(),
+            "thickness_mm": float(self.thickness_input.value()),
+            "qty": int(self.qty_input.value()),
+            "grade": self.grade_input.text().strip(),
+            "location": self.location_input.text().strip(),
+            "sheet_origin_job": self.sheet_origin_job_input.text().strip(),
+            "sheet_origin_index": self.sheet_origin_index_input.text().strip(),
+            "min_internal_width_mm": self.optional_float(self.min_internal_width_input.text()),
+            "usable_score": self.optional_float(self.usable_score_input.text()),
+            "notes": self.notes_input.toPlainText().strip(),
+            "push_url": self.push_url_input.text().strip(),
+            "push_on_save": self.push_on_save_checkbox.isChecked(),
+        }
+
+    def persist_export_settings(self):
+        path = save_settings(self.current_export_metadata())
+        self.log(f"Saved Workshop Hub settings: {path}")
+
+    def current_export_bundle(self, payload):
+        metadata = self.current_export_metadata()
+        if not metadata["material"] or metadata["thickness_mm"] <= 0:
+            return None
+        return build_workshop_bundle(payload, metadata)
+
+    def refresh_export_preview(self, payload):
+        bundle = self.current_export_bundle(payload)
+        if bundle is None:
+            self.export_status_value.setText("Enter material + thickness")
+            self.json_view.setPlainText(json.dumps({"scan_payload": payload}, indent=2))
+            return
+
+        self.export_status_value.setText("Bundle ready")
+        self.json_view.setPlainText(json.dumps(bundle, indent=2))
+
+    def refresh_export_preview_from_active_view(self, *_args):
+        scan_result = self.active_scan_result()
+        if scan_result is None:
+            return
+        try:
+            self.refresh_export_preview(scan_result["payload"])
+        except ValueError as exc:
+            self.export_status_value.setText(str(exc))
 
     def capture_baseline(self):
         try:
@@ -277,7 +422,6 @@ class MainWindow(QMainWindow):
             return self.engine.latest_view.scan_result
         return None
 
-
     def closeEvent(self, event):
         if self.timer.isActive():
             self.timer.stop()
@@ -291,17 +435,59 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            saved = self.engine.save_scan_result(scan_result)
+            metadata = self.current_export_metadata()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Save Scan", str(exc))
+            return
+        if not metadata["material"]:
+            QMessageBox.warning(self, "Save Scan", "Enter a material name before saving to Workshop Hub format.")
+            return
+        if metadata["thickness_mm"] <= 0:
+            QMessageBox.warning(self, "Save Scan", "Enter a thickness greater than 0 mm.")
+            return
+        if metadata["push_on_save"] and not metadata["push_url"]:
+            QMessageBox.warning(
+                self,
+                "Sheet Push",
+                "Push on save is enabled, but the Apps Script URL is blank.",
+            )
+            return
+
+        bundle = build_workshop_bundle(scan_result["payload"], metadata)
+        self.persist_export_settings()
+
+        try:
+            saved = self.engine.save_scan_result(scan_result, workshop_bundle=bundle)
         except Exception as exc:
             QMessageBox.critical(self, "Save Error", str(exc))
             self.log(f"Save failed: {exc}")
             return
 
+        push_message = "Sheet push skipped."
+        if metadata["push_on_save"]:
+            try:
+                response = post_workshop_bundle(metadata["push_url"], bundle)
+            except Exception as exc:
+                QMessageBox.critical(self, "Sheet Push Error", str(exc))
+                self.log(f"Sheet push failed: {exc}")
+                return
+
+            push_message = f"Sheet push OK (HTTP {response['status_code']})."
+            self.log(f"Sheet push response: {response['body']}")
+
         self.log(f"Saved preview: {saved['image_path']}")
         self.log(f"Saved mask: {saved['mask_path']}")
         self.log(f"Saved json: {saved['json_path']}")
+        if saved["workshop_json_path"]:
+            self.log(f"Saved Workshop Hub bundle: {saved['workshop_json_path']}")
         QMessageBox.information(
             self,
             "Scan Saved",
-            f"Preview: {saved['image_path']}\nMask: {saved['mask_path']}\nJSON: {saved['json_path']}",
+            (
+                f"Preview: {saved['image_path']}\n"
+                f"Mask: {saved['mask_path']}\n"
+                f"Scan JSON: {saved['json_path']}\n"
+                f"Workshop Bundle: {saved['workshop_json_path']}\n"
+                f"{push_message}"
+            ),
         )
