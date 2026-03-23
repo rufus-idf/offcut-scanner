@@ -6,3 +6,5 @@ captures/
 *.pyd
 calibration.json
 calibration_snapshot.png
+build/
+dist/
