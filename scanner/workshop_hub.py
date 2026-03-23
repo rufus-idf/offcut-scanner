@@ -1,4 +1,5 @@
 import json
+import re
 import urllib.error
 import urllib.request
 import uuid
@@ -117,6 +118,11 @@ def compact_timestamp(captured_at_utc: str) -> str:
     return dt.strftime("%Y%m%d%H%M%S")
 
 
+def short_timestamp(captured_at_utc: str) -> str:
+    dt = datetime.strptime(captured_at_utc, "%Y-%m-%dT%H:%M:%SZ")
+    return dt.strftime("%Y%m%d-%H%M%S")
+
+
 def map_shape_type(shape_type: str) -> str:
     return "POLYGON" if shape_type == "POLY" else shape_type
 
@@ -127,15 +133,38 @@ def optional_number(value: Any) -> float | int | str:
     return value
 
 
-def build_ids(captured_at_utc: str) -> dict[str, str]:
-    stamp = compact_timestamp(captured_at_utc)
-    suffix = uuid.uuid4().hex[:4].upper()
-    offcut_id = f"OC-{stamp}-{suffix}"
+def material_code(material: str) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", material.upper())
+    if not words:
+        return "MAT"
+
+    initials = "".join(word[0] for word in words[:4])
+    if len(initials) >= 2:
+        return initials
+
+    collapsed = "".join(words)
+    return collapsed[:4] or "MAT"
+
+
+def size_code(scan_payload: dict[str, Any], metadata: dict[str, Any]) -> str:
+    width_mm = int(round(float(scan_payload.get("bbox_w_mm", 0))))
+    height_mm = int(round(float(scan_payload.get("bbox_h_mm", 0))))
+    thickness_mm = int(round(float(metadata.get("thickness_mm", 0))))
+    return f"{thickness_mm}T-{width_mm}X{height_mm}"
+
+
+def build_ids(scan_payload: dict[str, Any], metadata: dict[str, Any]) -> dict[str, str]:
+    stamp = short_timestamp(scan_payload["captured_at_utc"])
+    material_tag = material_code(metadata["material"])
+    shape_tag = map_shape_type(scan_payload["shape_type"])
+    size_tag = size_code(scan_payload, metadata)
+    suffix = uuid.uuid4().hex[:3].upper()
+    offcut_id = f"OC-{stamp}-{material_tag}-{shape_tag}-{size_tag}-{suffix}"
     return {
         "offcut_id": offcut_id,
-        "shape_ref": f"SHAPE-{stamp}-{suffix}",
-        "preview_ref": f"PREV-{stamp}-{suffix}",
-        "event_id": f"EVT-{stamp}-{suffix}",
+        "shape_ref": f"{offcut_id}-SHP",
+        "preview_ref": f"{offcut_id}-PREV",
+        "event_id": f"{offcut_id}-CAP",
     }
 
 
@@ -199,7 +228,7 @@ def build_preview_row(scan_payload: dict[str, Any], ids: dict[str, str]) -> dict
 
 
 def build_workshop_bundle(scan_payload: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
-    ids = build_ids(scan_payload["captured_at_utc"])
+    ids = build_ids(scan_payload, metadata)
     inventory_row = build_inventory_row(scan_payload, metadata, ids)
     shape_row = build_shape_row(scan_payload, ids)
     event_row = build_event_row(scan_payload, metadata, ids)
@@ -216,6 +245,26 @@ def build_workshop_bundle(scan_payload: dict[str, Any], metadata: dict[str, Any]
         },
         "raw_scan_payload": scan_payload,
     }
+
+
+def fetch_texture_library_materials(push_url: str = DEFAULT_PUSH_URL, timeout_seconds: int = 20) -> list[str]:
+    separator = "&" if "?" in push_url else "?"
+    request_url = f"{(push_url or DEFAULT_PUSH_URL).strip()}{separator}action=materials"
+
+    try:
+        with urllib.request.urlopen(request_url, timeout=timeout_seconds) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            payload = json.loads(body)
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Material list fetch failed: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Material list fetch failed: invalid JSON response.") from exc
+
+    if payload.get("ok") is False:
+        raise RuntimeError(f"Material list fetch failed: {payload.get('error', 'Unknown Apps Script error.')}")
+
+    materials = payload.get("materials", [])
+    return [str(item).strip() for item in materials if str(item).strip()]
 
 
 def post_workshop_bundle(push_url: str, bundle: dict[str, Any], timeout_seconds: int = 20) -> dict[str, Any]:

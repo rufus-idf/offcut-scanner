@@ -1,11 +1,19 @@
 """Scanner package exports."""
 
-from .workshop_hub import DEFAULT_PUSH_URL, build_workshop_bundle, load_settings, post_workshop_bundle, save_settings
+from .workshop_hub import (
+    DEFAULT_PUSH_URL,
+    build_workshop_bundle,
+    fetch_texture_library_materials,
+    load_settings,
+    post_workshop_bundle,
+    save_settings,
+)
 
 __all__ = [
     "DEFAULT_PUSH_URL",
     "OffcutScannerEngine",
     "build_workshop_bundle",
+    "fetch_texture_library_materials",
     "load_settings",
     "post_workshop_bundle",
     "save_settings",

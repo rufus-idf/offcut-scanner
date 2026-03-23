@@ -9,10 +9,10 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
     QCheckBox,
+    QComboBox,
     QPushButton,
     QPlainTextEdit,
     QSizePolicy,
@@ -29,6 +29,7 @@ from scanner import (
     DEFAULT_PUSH_URL,
     OffcutScannerEngine,
     build_workshop_bundle,
+    fetch_texture_library_materials,
     load_settings,
     post_workshop_bundle,
     save_settings,
@@ -88,7 +89,10 @@ class MainWindow(QMainWindow):
         self.log_view.setMaximumBlockCount(200)
 
         settings = load_settings()
-        self.material_input = QLineEdit(settings["material"])
+        self.material_input = QComboBox()
+        self.material_input.setEditable(False)
+        self.material_input.addItem("Loading materials...")
+        self.saved_material_name = settings["material"]
         self.thickness_input = QDoubleSpinBox()
         self.thickness_input.setRange(0.0, 100.0)
         self.thickness_input.setDecimals(1)
@@ -106,6 +110,7 @@ class MainWindow(QMainWindow):
         self.push_on_save_checkbox = QCheckBox("Push to Google Sheet on save")
         self.push_on_save_checkbox.setChecked(bool(settings["push_on_save"]))
         self.push_now_button = QPushButton("Save + Push to Google Sheets")
+        self.refresh_materials_button = QPushButton("Refresh Materials")
         self.start_calibration_button = QPushButton("Start / Edit Calibration")
         self.reset_calibration_points_button = QPushButton("Reset Calibration Points")
         self.save_calibration_button = QPushButton("Save Calibration")
@@ -132,6 +137,7 @@ class MainWindow(QMainWindow):
         self.resume_button.clicked.connect(self.resume_live)
         self.save_button.clicked.connect(self.save_scan)
         self.push_now_button.clicked.connect(self.save_and_push_scan)
+        self.refresh_materials_button.clicked.connect(self.refresh_material_options)
         self.start_calibration_button.clicked.connect(self.start_calibration_mode)
         self.reset_calibration_points_button.clicked.connect(self.reset_calibration_points)
         self.save_calibration_button.clicked.connect(self.save_calibration)
@@ -148,6 +154,7 @@ class MainWindow(QMainWindow):
 
         self._build_layout()
         self._connect_export_form()
+        self.refresh_material_options()
 
     def _connect_export_form(self):
         widgets = [
@@ -159,7 +166,9 @@ class MainWindow(QMainWindow):
         ]
         for widget in widgets:
             signal = None
-            if hasattr(widget, "textChanged"):
+            if hasattr(widget, "currentTextChanged"):
+                signal = widget.currentTextChanged
+            elif hasattr(widget, "textChanged"):
                 signal = widget.textChanged
             elif hasattr(widget, "valueChanged"):
                 signal = widget.valueChanged
@@ -210,6 +219,7 @@ class MainWindow(QMainWindow):
         metadata_box = QGroupBox("Workshop Hub Export")
         metadata_layout = QFormLayout(metadata_box)
         metadata_layout.addRow("Material", self.material_input)
+        metadata_layout.addRow("", self.refresh_materials_button)
         metadata_layout.addRow("Thickness (mm)", self.thickness_input)
         metadata_layout.addRow("Qty", self.qty_input)
         metadata_layout.addRow("Notes", self.notes_input)
@@ -342,6 +352,29 @@ class MainWindow(QMainWindow):
     def update_baseline_status(self):
         self.baseline_value.setText("Captured" if self.engine.has_baseline() else "Not captured")
 
+    def refresh_material_options(self):
+        current_value = self.material_input.currentText().strip() or self.saved_material_name
+        try:
+            materials = fetch_texture_library_materials(DEFAULT_PUSH_URL)
+        except Exception as exc:
+            self.material_input.clear()
+            self.material_input.addItem("Unable to load materials")
+            self.material_input.setEnabled(False)
+            self.log(f"Material list refresh failed: {exc}")
+            return
+
+        self.material_input.clear()
+        self.material_input.addItem("")
+        for material in materials:
+            self.material_input.addItem(material)
+
+        self.material_input.setEnabled(True)
+        if current_value and current_value in materials:
+            self.material_input.setCurrentText(current_value)
+        elif self.saved_material_name and self.saved_material_name in materials:
+            self.material_input.setCurrentText(self.saved_material_name)
+        self.log(f"Loaded {len(materials)} materials from texture_library.")
+
     def handle_preview_click(self, x, y):
         if not self.calibration_mode or self.preview_image_shape is None or self.preview_target_rect is None:
             return
@@ -464,7 +497,7 @@ class MainWindow(QMainWindow):
 
     def current_export_metadata(self):
         return {
-            "material": self.material_input.text().strip(),
+            "material": self.material_input.currentText().strip(),
             "thickness_mm": float(self.thickness_input.value()),
             "qty": int(self.qty_input.value()),
             "grade": "",
@@ -479,6 +512,7 @@ class MainWindow(QMainWindow):
         }
 
     def persist_export_settings(self):
+        self.saved_material_name = self.material_input.currentText().strip()
         path = save_settings(self.current_export_metadata())
         self.log(f"Saved Workshop Hub settings: {path}")
 

@@ -50,7 +50,17 @@ const TAB_CONFIG = {
   ],
 };
 
-function doGet() {
+function doGet(e) {
+  const action = e && e.parameter && e.parameter.action ? String(e.parameter.action) : '';
+  if (action === 'materials') {
+    return jsonResponse_({
+      ok: true,
+      spreadsheet_name: SpreadsheetApp.openById(SHEET_ID).getName(),
+      materials: getTextureLibraryMaterials_(),
+      received_at_utc: new Date().toISOString(),
+    });
+  }
+
   return jsonResponse_({
     ok: true,
     message: 'Workshop Hub ingest endpoint is running.',
@@ -134,4 +144,27 @@ function jsonResponse_(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getTextureLibraryMaterials_() {
+  const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
+  const sheet = spreadsheet.getSheetByName('texture_library');
+  if (!sheet || sheet.getLastRow() < 2) {
+    return [];
+  }
+
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues();
+  const unique = [];
+  const seen = new Set();
+
+  values.forEach((row) => {
+    const material = String(row[0] || '').trim();
+    if (!material || seen.has(material)) {
+      return;
+    }
+    seen.add(material);
+    unique.push(material);
+  });
+
+  return unique;
 }
