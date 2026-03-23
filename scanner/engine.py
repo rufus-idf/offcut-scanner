@@ -17,6 +17,8 @@ APPROX_EPSILON_RATIO = 0.01
 HEIGHT_PERCENTILE = 95
 DEPTH_SAMPLE_RADIUS_PX = 2
 MIN_BED_PLANE_SCALE = 0.85
+DEFAULT_BED_WIDTH_MM = 400.0
+DEFAULT_BED_HEIGHT_MM = 300.0
 
 
 @dataclass
@@ -31,10 +33,17 @@ class FrameView:
 
 
 class OffcutScannerEngine:
-    def __init__(self, capture_dir: str | None = None, calibration_file: str | None = None):
+    def __init__(
+        self,
+        capture_dir: str | None = None,
+        calibration_file: str | None = None,
+        baseline_file: str | None = None,
+    ):
         self.runtime_dir = self.default_runtime_dir()
         self.capture_dir = str(self.resolve_runtime_path(capture_dir or "captures"))
         self.calibration_file = str(self.resolve_runtime_path(calibration_file or "calibration.json"))
+        self.baseline_file = str(self.resolve_runtime_path(baseline_file or "baseline_depth.npy"))
+        self.calibration_snapshot_file = str(self.resolve_runtime_path("calibration_snapshot.png"))
         os.makedirs(self.capture_dir, exist_ok=True)
 
         self.pipeline = None
@@ -75,19 +84,116 @@ class OffcutScannerEngine:
     def timestamp_id():
         return datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    def load_calibration(self):
+    @staticmethod
+    def default_bed_points_mm(width_mm=DEFAULT_BED_WIDTH_MM, height_mm=DEFAULT_BED_HEIGHT_MM):
+        return np.array(
+            [
+                [0.0, 0.0],
+                [float(width_mm), 0.0],
+                [float(width_mm), float(height_mm)],
+                [0.0, float(height_mm)],
+            ],
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def order_points(points_px):
+        pts = np.array(points_px, dtype=np.float32)
+        s = pts.sum(axis=1)
+        d = np.diff(pts, axis=1)
+
+        top_left = pts[np.argmin(s)]
+        bottom_right = pts[np.argmax(s)]
+        top_right = pts[np.argmin(d)]
+        bottom_left = pts[np.argmax(d)]
+
+        return np.array([top_left, top_right, bottom_right, bottom_left], dtype=np.float32)
+
+    def has_calibration(self):
+        return self.H is not None and self.H_inv is not None and self.bed_points_mm is not None
+
+    def has_baseline(self):
+        return self.baseline_depth_mm is not None
+
+    def load_calibration(self, required=True):
         calibration_path = Path(self.calibration_file)
         if not calibration_path.exists():
-            raise FileNotFoundError(
-                f"Calibration file not found: {calibration_path}. "
-                "Place calibration.json next to the app or pass a custom path."
-            )
+            self.H = None
+            self.H_inv = None
+            self.bed_points_mm = None
+            if required:
+                raise FileNotFoundError(
+                    f"Calibration file not found: {calibration_path}. "
+                    "Use in-app calibration or place calibration.json next to the app."
+                )
+            return False
 
         with calibration_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         self.H = np.array(data["homography_px_to_mm"], dtype=np.float32)
         self.H_inv = np.array(data["homography_mm_to_px"], dtype=np.float32)
         self.bed_points_mm = np.array(data["bed_points_mm"], dtype=np.float32)
+        return True
+
+    def save_calibration(self, image_points_px, bed_points_mm=None, snapshot_image=None):
+        if len(image_points_px) != 4:
+            raise ValueError("Exactly 4 calibration points are required.")
+
+        ordered_image_points_px = self.order_points(image_points_px)
+        ordered_bed_points_mm = np.array(
+            bed_points_mm if bed_points_mm is not None else self.default_bed_points_mm(),
+            dtype=np.float32,
+        )
+
+        H = cv2.getPerspectiveTransform(ordered_image_points_px, ordered_bed_points_mm)
+        H_inv = cv2.getPerspectiveTransform(ordered_bed_points_mm, ordered_image_points_px)
+
+        payload = {
+            "image_points_px": ordered_image_points_px.tolist(),
+            "bed_points_mm": ordered_bed_points_mm.tolist(),
+            "homography_px_to_mm": H.tolist(),
+            "homography_mm_to_px": H_inv.tolist(),
+        }
+
+        calibration_path = Path(self.calibration_file)
+        with calibration_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+        if snapshot_image is not None:
+            cv2.imwrite(self.calibration_snapshot_file, snapshot_image)
+
+        self.H = H
+        self.H_inv = H_inv
+        self.bed_points_mm = ordered_bed_points_mm
+        self.clear_baseline(delete_file=True)
+        return calibration_path
+
+    def load_baseline(self):
+        baseline_path = Path(self.baseline_file)
+        if not baseline_path.exists():
+            self.baseline_depth_mm = None
+            return False
+
+        baseline_depth_mm = np.load(baseline_path)
+        if self.latest_depth_mm is not None and baseline_depth_mm.shape != self.latest_depth_mm.shape:
+            self.baseline_depth_mm = None
+            return False
+
+        self.baseline_depth_mm = baseline_depth_mm.astype(np.float32)
+        return True
+
+    def save_baseline(self):
+        if self.baseline_depth_mm is None:
+            raise RuntimeError("No baseline is loaded to save.")
+        np.save(self.baseline_file, self.baseline_depth_mm)
+        return Path(self.baseline_file)
+
+    def clear_baseline(self, delete_file=False):
+        self.baseline_depth_mm = None
+        if delete_file:
+            baseline_path = Path(self.baseline_file)
+            if baseline_path.exists():
+                baseline_path.unlink()
 
     @staticmethod
     def transform_points_px_to_mm(points_px, H):
@@ -241,7 +347,7 @@ class OffcutScannerEngine:
         return corrected_vertices_px, vertex_depths_mm
 
     def start_camera(self):
-        self.load_calibration()
+        self.load_calibration(required=False)
 
         self.pipeline = rs.pipeline()
         config = rs.config()
@@ -260,6 +366,7 @@ class OffcutScannerEngine:
         self.spatial = rs.spatial_filter()
         self.temporal = rs.temporal_filter()
         self.hole_filling = rs.hole_filling_filter()
+        self.load_baseline()
 
     def stop_camera(self):
         if self.pipeline is not None:
@@ -280,6 +387,7 @@ class OffcutScannerEngine:
         if self.latest_depth_mm is None:
             raise RuntimeError("No frame available yet.")
         self.baseline_depth_mm = self.latest_depth_mm.copy()
+        self.save_baseline()
 
     def process_frames(self, frames):
         aligned = self.align.process(frames)
@@ -343,6 +451,8 @@ class OffcutScannerEngine:
         return float(np.percentile(valid_heights, percentile))
 
     def draw_calibration_overlay(self, display):
+        if not self.has_calibration():
+            return
         bed_outline_px = self.transform_points_mm_to_px(self.bed_points_mm, self.H_inv).astype(int)
         cv2.polylines(display, [bed_outline_px], True, (0, 255, 255), 2)
 
@@ -356,6 +466,8 @@ class OffcutScannerEngine:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
 
     def draw_mm_overlay(self, display, points_mm, shape_type):
+        if not self.has_calibration():
+            return
         if len(points_mm) == 0:
             return
 
@@ -416,15 +528,22 @@ class OffcutScannerEngine:
         self.latest_color_image = color_image.copy()
 
         display = color_image.copy()
-        self.draw_calibration_overlay(display)
         mask_display = np.zeros(current_depth_mm.shape, dtype=np.uint8)
 
         payload = None
         scan_result = None
-        status_text = "Press 'Capture Empty Bed' to record the empty surface."
+        if not self.has_calibration():
+            status_text = "Calibration required. Use the in-app calibration controls."
+        elif self.baseline_depth_mm is None:
+            status_text = "Press 'Capture Empty Bed' to record the empty surface."
+        else:
+            status_text = "No offcut detected."
         has_detection = False
 
-        if self.baseline_depth_mm is not None:
+        if self.has_calibration():
+            self.draw_calibration_overlay(display)
+
+        if self.has_calibration() and self.baseline_depth_mm is not None:
             bed_depth_mm = self.estimate_bed_depth_mm(self.baseline_depth_mm)
             mask, diff_mm = self.build_mask(current_depth_mm, self.baseline_depth_mm)
             mask_display = mask

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import cv2
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -35,6 +35,15 @@ from scanner import (
 )
 
 
+class ClickablePreviewLabel(QLabel):
+    clicked = Signal(int, int)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(int(event.position().x()), int(event.position().y()))
+        super().mousePressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -49,11 +58,16 @@ class MainWindow(QMainWindow):
         self.frozen_view = None
         self.freeze_active = False
 
-        self.preview_label = QLabel("Camera not started")
+        self.preview_label = ClickablePreviewLabel("Camera not started")
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setMinimumSize(960, 720)
         self.preview_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.preview_label.setStyleSheet("background-color: #111; color: #ddd; border: 1px solid #444;")
+        self.preview_label.clicked.connect(self.handle_preview_click)
+        self.preview_image_shape = None
+        self.preview_target_rect = None
+        self.calibration_mode = False
+        self.calibration_points_px = []
 
         self.status_label = QLabel("Ready")
         self.status_label.setWordWrap(True)
@@ -92,6 +106,17 @@ class MainWindow(QMainWindow):
         self.push_on_save_checkbox = QCheckBox("Push to Google Sheet on save")
         self.push_on_save_checkbox.setChecked(bool(settings["push_on_save"]))
         self.push_now_button = QPushButton("Save + Push to Google Sheets")
+        self.start_calibration_button = QPushButton("Start / Edit Calibration")
+        self.reset_calibration_points_button = QPushButton("Reset Calibration Points")
+        self.save_calibration_button = QPushButton("Save Calibration")
+        self.bed_width_input = QDoubleSpinBox()
+        self.bed_width_input.setRange(50.0, 10000.0)
+        self.bed_width_input.setDecimals(1)
+        self.bed_width_input.setValue(400.0)
+        self.bed_height_input = QDoubleSpinBox()
+        self.bed_height_input.setRange(50.0, 10000.0)
+        self.bed_height_input.setDecimals(1)
+        self.bed_height_input.setValue(300.0)
 
         self.start_button = QPushButton("Start Camera")
         self.stop_button = QPushButton("Stop Camera")
@@ -107,6 +132,9 @@ class MainWindow(QMainWindow):
         self.resume_button.clicked.connect(self.resume_live)
         self.save_button.clicked.connect(self.save_scan)
         self.push_now_button.clicked.connect(self.save_and_push_scan)
+        self.start_calibration_button.clicked.connect(self.start_calibration_mode)
+        self.reset_calibration_points_button.clicked.connect(self.reset_calibration_points)
+        self.save_calibration_button.clicked.connect(self.save_calibration)
 
         self.stop_button.setEnabled(False)
         self.capture_baseline_button.setEnabled(False)
@@ -114,6 +142,9 @@ class MainWindow(QMainWindow):
         self.resume_button.setEnabled(False)
         self.save_button.setEnabled(False)
         self.push_now_button.setEnabled(False)
+        self.start_calibration_button.setEnabled(False)
+        self.reset_calibration_points_button.setEnabled(False)
+        self.save_calibration_button.setEnabled(False)
 
         self._build_layout()
         self._connect_export_form()
@@ -148,6 +179,9 @@ class MainWindow(QMainWindow):
             self.start_button,
             self.stop_button,
             self.capture_baseline_button,
+            self.start_calibration_button,
+            self.reset_calibration_points_button,
+            self.save_calibration_button,
             self.freeze_button,
             self.resume_button,
             self.save_button,
@@ -180,6 +214,14 @@ class MainWindow(QMainWindow):
         metadata_layout.addRow("Qty", self.qty_input)
         metadata_layout.addRow("Notes", self.notes_input)
 
+        calibration_box = QGroupBox("Calibration")
+        calibration_layout = QFormLayout(calibration_box)
+        calibration_layout.addRow("Bed width (mm)", self.bed_width_input)
+        calibration_layout.addRow("Bed height (mm)", self.bed_height_input)
+        calibration_hint = QLabel("Click the 4 bed corners in preview: top-left, top-right, bottom-right, bottom-left.")
+        calibration_hint.setWordWrap(True)
+        calibration_layout.addRow(calibration_hint)
+
         sheets_box = QGroupBox("Google Sheets Push")
         sheets_layout = QVBoxLayout(sheets_box)
         sheets_form = QFormLayout()
@@ -201,6 +243,7 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_content)
         right_layout.addWidget(controls_box)
         right_layout.addWidget(results_box)
+        right_layout.addWidget(calibration_box)
         right_layout.addWidget(sheets_box)
         right_layout.addWidget(metadata_box)
         right_layout.addWidget(payload_box, stretch=1)
@@ -223,9 +266,45 @@ class MainWindow(QMainWindow):
     def log(self, message):
         self.log_view.appendPlainText(message)
 
+    def draw_pending_calibration_overlay(self, image):
+        if not self.calibration_mode:
+            return image
+
+        overlay = image.copy()
+        for index, (x, y) in enumerate(self.calibration_points_px):
+            cv2.circle(overlay, (int(x), int(y)), 8, (0, 165, 255), -1)
+            cv2.putText(
+                overlay,
+                str(index + 1),
+                (int(x) + 10, int(y) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 165, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+        if len(self.calibration_points_px) == 4:
+            ordered = self.engine.order_points(self.calibration_points_px).astype(int)
+            cv2.polylines(overlay, [ordered], True, (0, 255, 255), 2)
+
+        cv2.putText(
+            overlay,
+            "Calibration mode: click 4 bed corners",
+            (20, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 165, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        return overlay
+
     def set_preview_image(self, image):
         if image is None:
             return
+
+        image = self.draw_pending_calibration_overlay(image)
 
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
@@ -237,6 +316,10 @@ class MainWindow(QMainWindow):
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation,
         )
+        self.preview_image_shape = (height, width)
+        x_offset = (self.preview_label.width() - scaled.width()) // 2
+        y_offset = (self.preview_label.height() - scaled.height()) // 2
+        self.preview_target_rect = (x_offset, y_offset, scaled.width(), scaled.height())
         self.preview_label.setPixmap(scaled)
 
     def resizeEvent(self, event):
@@ -244,6 +327,43 @@ class MainWindow(QMainWindow):
         active_view = self.frozen_view if self.freeze_active else self.engine.latest_view
         if active_view is not None:
             self.set_preview_image(active_view.preview_image)
+
+    def refresh_calibration_status(self):
+        if self.engine.has_calibration():
+            self.calibration_value.setText(Path(self.engine.calibration_file).name)
+            if self.engine.bed_points_mm is not None and len(self.engine.bed_points_mm) >= 3:
+                width_mm = float(self.engine.bed_points_mm[1][0] - self.engine.bed_points_mm[0][0])
+                height_mm = float(self.engine.bed_points_mm[2][1] - self.engine.bed_points_mm[1][1])
+                self.bed_width_input.setValue(width_mm)
+                self.bed_height_input.setValue(height_mm)
+        else:
+            self.calibration_value.setText("Not calibrated")
+
+    def update_baseline_status(self):
+        self.baseline_value.setText("Captured" if self.engine.has_baseline() else "Not captured")
+
+    def handle_preview_click(self, x, y):
+        if not self.calibration_mode or self.preview_image_shape is None or self.preview_target_rect is None:
+            return
+
+        rect_x, rect_y, rect_w, rect_h = self.preview_target_rect
+        if rect_w <= 0 or rect_h <= 0:
+            return
+        if x < rect_x or y < rect_y or x > rect_x + rect_w or y > rect_y + rect_h:
+            return
+
+        image_h, image_w = self.preview_image_shape
+        image_x = (x - rect_x) * image_w / rect_w
+        image_y = (y - rect_y) * image_h / rect_h
+
+        if len(self.calibration_points_px) < 4:
+            self.calibration_points_px.append([float(image_x), float(image_y)])
+            self.save_calibration_button.setEnabled(len(self.calibration_points_px) == 4)
+            self.status_label.setText(f"Calibration point {len(self.calibration_points_px)}/4 recorded.")
+            self.log(f"Calibration point {len(self.calibration_points_px)} captured at px=({image_x:.1f}, {image_y:.1f}).")
+            active_view = self.frozen_view if self.freeze_active else self.engine.latest_view
+            if active_view is not None:
+                self.set_preview_image(active_view.preview_image)
 
     def start_camera(self):
         try:
@@ -256,22 +376,35 @@ class MainWindow(QMainWindow):
         self.timer.start()
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
-        self.capture_baseline_button.setEnabled(True)
+        self.capture_baseline_button.setEnabled(self.engine.has_calibration())
+        self.start_calibration_button.setEnabled(True)
+        self.reset_calibration_points_button.setEnabled(False)
+        self.save_calibration_button.setEnabled(False)
         self.freeze_button.setEnabled(True)
-        self.calibration_value.setText(Path(self.engine.calibration_file).name)
-        self.status_label.setText("Camera started.")
-        self.log("Camera started.")
+        self.refresh_calibration_status()
+        self.update_baseline_status()
+        if self.engine.has_calibration():
+            self.status_label.setText("Camera started.")
+            self.log("Camera started.")
+        else:
+            self.status_label.setText("Camera started. No saved calibration found.")
+            self.log("Camera started. No saved calibration found; use in-app calibration.")
 
     def stop_camera(self):
         self.timer.stop()
         self.engine.stop_camera()
         self.freeze_active = False
+        self.calibration_mode = False
+        self.calibration_points_px.clear()
         self.frozen_view = None
         self.preview_label.setText("Camera stopped")
         self.preview_label.setPixmap(QPixmap())
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.capture_baseline_button.setEnabled(False)
+        self.start_calibration_button.setEnabled(False)
+        self.reset_calibration_points_button.setEnabled(False)
+        self.save_calibration_button.setEnabled(False)
         self.freeze_button.setEnabled(False)
         self.resume_button.setEnabled(False)
         self.save_button.setEnabled(False)
@@ -300,9 +433,8 @@ class MainWindow(QMainWindow):
     def update_from_view(self, view):
         self.set_preview_image(view.preview_image)
         self.status_label.setText(view.status_text)
-
-        if self.engine.baseline_depth_mm is not None:
-            self.baseline_value.setText("Captured")
+        self.refresh_calibration_status()
+        self.update_baseline_status()
 
         payload = view.payload
         if payload is None:
@@ -383,8 +515,71 @@ class MainWindow(QMainWindow):
             self.log(f"Baseline capture failed: {exc}")
             return
 
-        self.baseline_value.setText("Captured")
-        self.log("Empty-bed baseline captured.")
+        self.update_baseline_status()
+        self.log(f"Empty-bed baseline captured and saved to {self.engine.baseline_file}.")
+
+    def start_calibration_mode(self):
+        if self.engine.latest_view is None:
+            QMessageBox.information(self, "Calibration", "Start the camera and wait for a live frame first.")
+            return
+
+        self.calibration_mode = True
+        self.calibration_points_px = []
+        self.reset_calibration_points_button.setEnabled(True)
+        self.save_calibration_button.setEnabled(False)
+        self.capture_baseline_button.setEnabled(False)
+        self.baseline_value.setText("Not captured")
+        self.status_label.setText("Calibration mode: click 4 bed corners.")
+        self.log("Calibration mode started. Click the 4 bed corners in the preview.")
+        active_view = self.frozen_view if self.freeze_active else self.engine.latest_view
+        if active_view is not None:
+            self.set_preview_image(active_view.preview_image)
+
+    def reset_calibration_points(self):
+        self.calibration_points_px = []
+        self.save_calibration_button.setEnabled(False)
+        self.status_label.setText("Calibration points reset.")
+        self.log("Calibration points reset.")
+        active_view = self.frozen_view if self.freeze_active else self.engine.latest_view
+        if active_view is not None:
+            self.set_preview_image(active_view.preview_image)
+
+    def save_calibration(self):
+        if len(self.calibration_points_px) != 4:
+            QMessageBox.warning(self, "Calibration", "Click all 4 bed corners before saving.")
+            return
+
+        bed_points_mm = self.engine.default_bed_points_mm(
+            self.bed_width_input.value(),
+            self.bed_height_input.value(),
+        )
+        snapshot_image = None
+        active_view = self.frozen_view if self.freeze_active else self.engine.latest_view
+        if active_view is not None:
+            snapshot_image = active_view.color_image
+
+        try:
+            calibration_path = self.engine.save_calibration(
+                self.calibration_points_px,
+                bed_points_mm=bed_points_mm,
+                snapshot_image=snapshot_image,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Calibration Error", str(exc))
+            self.log(f"Calibration save failed: {exc}")
+            return
+
+        self.calibration_mode = False
+        self.calibration_points_px = []
+        self.reset_calibration_points_button.setEnabled(False)
+        self.save_calibration_button.setEnabled(False)
+        self.capture_baseline_button.setEnabled(True)
+        self.refresh_calibration_status()
+        self.update_baseline_status()
+        self.status_label.setText("Calibration saved. Capture a fresh empty-bed baseline.")
+        self.log(f"Calibration saved to {calibration_path}. Baseline cleared; capture a new empty-bed baseline.")
+        if active_view is not None:
+            self.set_preview_image(active_view.preview_image)
 
     def freeze_scan(self):
         view = self.engine.latest_view
