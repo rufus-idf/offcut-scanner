@@ -38,8 +38,9 @@ Why this route:
 8. Set the web app to execute as **you**.
 9. Give access to the smallest audience that still works for your workshop deployment.
 10. Copy the deployed `/exec` URL.
-11. Paste that URL into the scanner app’s **Apps Script URL** field.
-12. Tick **Push to Google Sheet on save**.
+11. Open that `/exec` URL once in your browser. You should now get a small JSON health response instead of a `doGet` error.
+12. Paste that URL into the scanner app’s **Apps Script URL** field.
+13. Tick **Push to Google Sheet on save**.
 
 ## What gets written where
 

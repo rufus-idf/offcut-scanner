@@ -34,6 +34,15 @@ const TAB_CONFIG = {
   ],
 };
 
+function doGet() {
+  return jsonResponse_({
+    ok: true,
+    message: 'Workshop Hub ingest endpoint is running.',
+    expected_method: 'POST',
+    received_at_utc: new Date().toISOString(),
+  });
+}
+
 function doPost(e) {
   try {
     const payload = JSON.parse(e.postData.contents);
