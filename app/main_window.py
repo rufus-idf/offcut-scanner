@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self.material_input = QComboBox()
         self.material_input.setEditable(False)
         self.material_input.addItem("Loading materials...")
+        self.material_input.setEnabled(False)
         self.saved_material_name = settings["material"]
         self.thickness_input = QDoubleSpinBox()
         self.thickness_input.setRange(0.0, 100.0)
@@ -360,11 +361,11 @@ class MainWindow(QMainWindow):
             self.material_input.clear()
             self.material_input.addItem("Unable to load materials")
             self.material_input.setEnabled(False)
+            self.export_status_value.setText("Material list unavailable")
             self.log(f"Material list refresh failed: {exc}")
             return
 
         self.material_input.clear()
-        self.material_input.addItem("")
         for material in materials:
             self.material_input.addItem(material)
 
@@ -373,6 +374,8 @@ class MainWindow(QMainWindow):
             self.material_input.setCurrentText(current_value)
         elif self.saved_material_name and self.saved_material_name in materials:
             self.material_input.setCurrentText(self.saved_material_name)
+        elif materials:
+            self.material_input.setCurrentIndex(0)
         self.log(f"Loaded {len(materials)} materials from texture_library.")
 
     def handle_preview_click(self, x, y):

@@ -263,7 +263,16 @@ def fetch_texture_library_materials(push_url: str = DEFAULT_PUSH_URL, timeout_se
     if payload.get("ok") is False:
         raise RuntimeError(f"Material list fetch failed: {payload.get('error', 'Unknown Apps Script error.')}")
 
+    if "materials" not in payload:
+        raise RuntimeError(
+            "Material list fetch failed: the Apps Script endpoint did not return a "
+            "'materials' list. Update Code.gs from google_apps_script/workshop_hub_ingest.gs "
+            "and redeploy the web app."
+        )
+
     materials = payload.get("materials", [])
+    if not materials:
+        raise RuntimeError("Material list fetch failed: texture_library returned no materials.")
     return [str(item).strip() for item in materials if str(item).strip()]
 
 
