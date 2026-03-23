@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QSplitter,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
     QFormLayout,
@@ -97,6 +98,7 @@ class MainWindow(QMainWindow):
         self.push_url_input.setPlaceholderText("https://script.google.com/macros/s/.../exec")
         self.push_on_save_checkbox = QCheckBox("Push to Google Sheet on save")
         self.push_on_save_checkbox.setChecked(bool(settings["push_on_save"]))
+        self.push_now_button = QPushButton("Save + Push to Google Sheets")
 
         self.start_button = QPushButton("Start Camera")
         self.stop_button = QPushButton("Stop Camera")
@@ -111,12 +113,14 @@ class MainWindow(QMainWindow):
         self.freeze_button.clicked.connect(self.freeze_scan)
         self.resume_button.clicked.connect(self.resume_live)
         self.save_button.clicked.connect(self.save_scan)
+        self.push_now_button.clicked.connect(self.save_and_push_scan)
 
         self.stop_button.setEnabled(False)
         self.capture_baseline_button.setEnabled(False)
         self.freeze_button.setEnabled(False)
         self.resume_button.setEnabled(False)
         self.save_button.setEnabled(False)
+        self.push_now_button.setEnabled(False)
 
         self._build_layout()
         self._connect_export_form()
@@ -195,8 +199,15 @@ class MainWindow(QMainWindow):
         metadata_layout.addRow("Min Internal Width", self.min_internal_width_input)
         metadata_layout.addRow("Usable Score", self.usable_score_input)
         metadata_layout.addRow("Notes", self.notes_input)
-        metadata_layout.addRow("Apps Script URL", self.push_url_input)
-        metadata_layout.addRow("", self.push_on_save_checkbox)
+
+        sheets_box = QGroupBox("Google Sheets Push")
+        sheets_layout = QVBoxLayout(sheets_box)
+        sheets_form = QFormLayout()
+        sheets_form.addRow("Apps Script URL", self.push_url_input)
+        sheets_layout.addLayout(sheets_form)
+        sheets_layout.addWidget(self.push_on_save_checkbox)
+        sheets_layout.addWidget(self.push_now_button)
+        sheets_layout.addStretch(1)
 
         payload_box = QGroupBox("Export Preview")
         payload_layout = QVBoxLayout(payload_box)
@@ -206,13 +217,18 @@ class MainWindow(QMainWindow):
         log_layout = QVBoxLayout(log_box)
         log_layout.addWidget(self.log_view)
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
+        right_content = QWidget()
+        right_layout = QVBoxLayout(right_content)
         right_layout.addWidget(controls_box)
         right_layout.addWidget(results_box)
+        right_layout.addWidget(sheets_box)
         right_layout.addWidget(metadata_box)
         right_layout.addWidget(payload_box, stretch=1)
         right_layout.addWidget(log_box, stretch=1)
+
+        right_panel = QScrollArea()
+        right_panel.setWidgetResizable(True)
+        right_panel.setWidget(right_content)
 
         splitter = QSplitter()
         splitter.addWidget(preview_container)
@@ -279,6 +295,7 @@ class MainWindow(QMainWindow):
         self.freeze_button.setEnabled(False)
         self.resume_button.setEnabled(False)
         self.save_button.setEnabled(False)
+        self.push_now_button.setEnabled(False)
         self.status_label.setText("Camera stopped.")
         self.log("Camera stopped.")
 
@@ -316,6 +333,7 @@ class MainWindow(QMainWindow):
             self.export_status_value.setText("Waiting for detection")
             self.json_view.clear()
             self.save_button.setEnabled(False)
+            self.push_now_button.setEnabled(False)
             return
 
         self.shape_value.setText(payload["shape_type"])
@@ -330,6 +348,7 @@ class MainWindow(QMainWindow):
             self.export_status_value.setText(str(exc))
             self.json_view.setPlainText(json.dumps({"scan_payload": payload}, indent=2))
         self.save_button.setEnabled(view.has_detection)
+        self.push_now_button.setEnabled(view.has_detection)
 
     @staticmethod
     def optional_float(text):
@@ -428,7 +447,7 @@ class MainWindow(QMainWindow):
         self.engine.stop_camera()
         super().closeEvent(event)
 
-    def save_scan(self):
+    def save_scan(self, force_push=False):
         scan_result = self.active_scan_result()
         if scan_result is None:
             QMessageBox.information(self, "Save Scan", "No valid scan result is available to save.")
@@ -445,7 +464,9 @@ class MainWindow(QMainWindow):
         if metadata["thickness_mm"] <= 0:
             QMessageBox.warning(self, "Save Scan", "Enter a thickness greater than 0 mm.")
             return
-        if metadata["push_on_save"] and not metadata["push_url"]:
+        should_push = metadata["push_on_save"] or force_push
+        metadata["push_on_save"] = should_push
+        if should_push and not metadata["push_url"]:
             QMessageBox.warning(
                 self,
                 "Sheet Push",
@@ -464,7 +485,7 @@ class MainWindow(QMainWindow):
             return
 
         push_message = "Sheet push skipped."
-        if metadata["push_on_save"]:
+        if should_push:
             try:
                 response = post_workshop_bundle(metadata["push_url"], bundle)
             except Exception as exc:
@@ -491,3 +512,7 @@ class MainWindow(QMainWindow):
                 f"{push_message}"
             ),
         )
+
+    def save_and_push_scan(self):
+        self.push_on_save_checkbox.setChecked(True)
+        self.save_scan(force_push=True)
