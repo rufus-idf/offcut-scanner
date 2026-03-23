@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+DEFAULT_PUSH_URL = (
+    "https://script.googleusercontent.com/a/macros/i-designfurniture.com/echo"
+    "?user_content_key=AWDtjMV4E_FpeqMzRVzpQ2DFdHXhiZOSpeZ72xm-_p_mqPxHzZBA89WpLAXuO6eFMnWX5_6TRjkiRb1tI6ttlFBmKk8PcIUcNayR_bAMNPCVgirRC_CU5r5ZJ9JM6NFlqPq5ga0oLNx1NQwaPfY6i_xLDKD5_EhgvHV2OizxIYVpQU2fDyHINxQiUmK3RvRzbsm3LVxCEsLvwjiYkPNDP-owLSc1_ycsPdkgLTwp4bJbERrp-NRcO-5sLxWIQJ0eDHchZkJ2p40qmABfbrtb9UwXWzvpDzV7IaR71uEBqFfPcbfvLAaIEJa8lrnCjXOhnAqvuPXtrbIl&lib=Mz0XJXSrSLe0wqkfR_LJXitNDHtFIQXus"
+)
 
 INVENTORY_HEADERS = [
     "offcut_id",
@@ -44,14 +48,14 @@ DEFAULT_SETTINGS = {
     "material": "",
     "thickness_mm": 0.0,
     "grade": "",
-    "location": "",
+    "location": "workshop",
     "notes": "",
     "sheet_origin_job": "",
     "sheet_origin_index": "",
     "min_internal_width_mm": "",
     "usable_score": "",
     "qty": 1,
-    "push_url": "",
+    "push_url": DEFAULT_PUSH_URL,
     "push_on_save": False,
 }
 
@@ -170,9 +174,10 @@ def build_workshop_bundle(scan_payload: dict[str, Any], metadata: dict[str, Any]
 
 
 def post_workshop_bundle(push_url: str, bundle: dict[str, Any], timeout_seconds: int = 20) -> dict[str, Any]:
+    resolved_push_url = (push_url or DEFAULT_PUSH_URL).strip()
     payload = json.dumps(bundle).encode("utf-8")
     request = urllib.request.Request(
-        push_url,
+        resolved_push_url,
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -195,6 +200,12 @@ def post_workshop_bundle(push_url: str, bundle: dict[str, Any], timeout_seconds:
             }
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 401:
+            raise RuntimeError(
+                "Sheet push failed with HTTP 401. The deployed Apps Script URL is rejecting "
+                "anonymous requests. Redeploy the web app with public access, or update the "
+                "hardcoded push URL to the current public googleusercontent endpoint."
+            ) from exc
         raise RuntimeError(f"Sheet push failed with HTTP {exc.code}: {error_body}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Sheet push failed: {exc.reason}") from exc

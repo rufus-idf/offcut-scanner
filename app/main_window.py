@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from scanner import (
+    DEFAULT_PUSH_URL,
     OffcutScannerEngine,
     build_workshop_bundle,
     load_settings,
@@ -82,20 +83,12 @@ class MainWindow(QMainWindow):
         self.qty_input = QSpinBox()
         self.qty_input.setRange(1, 999)
         self.qty_input.setValue(int(settings["qty"]))
-        self.grade_input = QLineEdit(settings["grade"])
-        self.location_input = QLineEdit(settings["location"])
-        self.sheet_origin_job_input = QLineEdit(settings["sheet_origin_job"])
-        self.sheet_origin_index_input = QLineEdit(str(settings["sheet_origin_index"]))
-        self.min_internal_width_input = QLineEdit(str(settings["min_internal_width_mm"]))
-        self.min_internal_width_input.setPlaceholderText("optional")
-        self.usable_score_input = QLineEdit(str(settings["usable_score"]))
-        self.usable_score_input.setPlaceholderText("optional")
         self.notes_input = QPlainTextEdit()
         self.notes_input.setPlainText(settings["notes"])
         self.notes_input.setMaximumBlockCount(20)
         self.notes_input.setMaximumHeight(90)
-        self.push_url_input = QLineEdit(settings["push_url"])
-        self.push_url_input.setPlaceholderText("https://script.google.com/macros/s/.../exec")
+        self.push_target_label = QLabel("Workshop Hub stock sheet (hardcoded)")
+        self.push_target_label.setWordWrap(True)
         self.push_on_save_checkbox = QCheckBox("Push to Google Sheet on save")
         self.push_on_save_checkbox.setChecked(bool(settings["push_on_save"]))
         self.push_now_button = QPushButton("Save + Push to Google Sheets")
@@ -130,14 +123,7 @@ class MainWindow(QMainWindow):
             self.material_input,
             self.thickness_input,
             self.qty_input,
-            self.grade_input,
-            self.location_input,
-            self.sheet_origin_job_input,
-            self.sheet_origin_index_input,
-            self.min_internal_width_input,
-            self.usable_score_input,
             self.notes_input,
-            self.push_url_input,
             self.push_on_save_checkbox,
         ]
         for widget in widgets:
@@ -192,18 +178,12 @@ class MainWindow(QMainWindow):
         metadata_layout.addRow("Material", self.material_input)
         metadata_layout.addRow("Thickness (mm)", self.thickness_input)
         metadata_layout.addRow("Qty", self.qty_input)
-        metadata_layout.addRow("Grade", self.grade_input)
-        metadata_layout.addRow("Location", self.location_input)
-        metadata_layout.addRow("Sheet Job", self.sheet_origin_job_input)
-        metadata_layout.addRow("Sheet Index", self.sheet_origin_index_input)
-        metadata_layout.addRow("Min Internal Width", self.min_internal_width_input)
-        metadata_layout.addRow("Usable Score", self.usable_score_input)
         metadata_layout.addRow("Notes", self.notes_input)
 
         sheets_box = QGroupBox("Google Sheets Push")
         sheets_layout = QVBoxLayout(sheets_box)
         sheets_form = QFormLayout()
-        sheets_form.addRow("Apps Script URL", self.push_url_input)
+        sheets_form.addRow("Target", self.push_target_label)
         sheets_layout.addLayout(sheets_form)
         sheets_layout.addWidget(self.push_on_save_checkbox)
         sheets_layout.addWidget(self.push_now_button)
@@ -350,29 +330,19 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(view.has_detection)
         self.push_now_button.setEnabled(view.has_detection)
 
-    @staticmethod
-    def optional_float(text):
-        value = text.strip()
-        if value == "":
-            return ""
-        try:
-            return float(value)
-        except ValueError as exc:
-            raise ValueError(f"Invalid numeric value: {value}") from exc
-
     def current_export_metadata(self):
         return {
             "material": self.material_input.text().strip(),
             "thickness_mm": float(self.thickness_input.value()),
             "qty": int(self.qty_input.value()),
-            "grade": self.grade_input.text().strip(),
-            "location": self.location_input.text().strip(),
-            "sheet_origin_job": self.sheet_origin_job_input.text().strip(),
-            "sheet_origin_index": self.sheet_origin_index_input.text().strip(),
-            "min_internal_width_mm": self.optional_float(self.min_internal_width_input.text()),
-            "usable_score": self.optional_float(self.usable_score_input.text()),
+            "grade": "",
+            "location": "workshop",
+            "sheet_origin_job": "",
+            "sheet_origin_index": "",
+            "min_internal_width_mm": "",
+            "usable_score": "",
             "notes": self.notes_input.toPlainText().strip(),
-            "push_url": self.push_url_input.text().strip(),
+            "push_url": DEFAULT_PUSH_URL,
             "push_on_save": self.push_on_save_checkbox.isChecked(),
         }
 
@@ -466,13 +436,6 @@ class MainWindow(QMainWindow):
             return
         should_push = metadata["push_on_save"] or force_push
         metadata["push_on_save"] = should_push
-        if should_push and not metadata["push_url"]:
-            QMessageBox.warning(
-                self,
-                "Sheet Push",
-                "Push on save is enabled, but the Apps Script URL is blank.",
-            )
-            return
 
         bundle = build_workshop_bundle(scan_result["payload"], metadata)
         self.persist_export_settings()
