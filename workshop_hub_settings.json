@@ -1,0 +1,14 @@
+{
+  "material": "Bardolino MDF",
+  "thickness_mm": 18.0,
+  "grade": "1",
+  "location": "1",
+  "notes": "TEST",
+  "sheet_origin_job": "1",
+  "sheet_origin_index": "1",
+  "min_internal_width_mm": "",
+  "usable_score": "",
+  "qty": 1,
+  "push_url": "https://script.google.com/a/macros/i-designfurniture.com/s/AKfycbzNTN2rTgnBEBTuCv3qljGM9wJUkJi6MRs-UM_CTbTJ6MLy-9m1JX6DbTKNrn3p06UTfw/exec",
+  "push_on_save": true
+}
