@@ -456,8 +456,23 @@ class MainWindow(QMainWindow):
                 self.log(f"Sheet push failed: {exc}")
                 return
 
+            response_body = response["body"]
             push_message = f"Sheet push OK (HTTP {response['status_code']})."
-            self.log(f"Sheet push response: {response['body']}")
+            if isinstance(response_body, dict):
+                spreadsheet_name = response_body.get("spreadsheet_name")
+                inventory_rows = response_body.get("inventory_rows_written")
+                shape_rows = response_body.get("shape_rows_written")
+                event_rows = response_body.get("event_rows_written")
+                preview_rows = response_body.get("preview_rows_written")
+                counts = (
+                    f"inventory={inventory_rows}, shapes={shape_rows}, "
+                    f"events={event_rows}, previews={preview_rows}"
+                )
+                if spreadsheet_name:
+                    push_message = f"Sheet push OK to '{spreadsheet_name}' (HTTP {response['status_code']}; {counts})."
+                else:
+                    push_message = f"Sheet push OK (HTTP {response['status_code']}; {counts})."
+            self.log(f"Sheet push response: {response_body}")
 
         self.log(f"Saved preview: {saved['image_path']}")
         self.log(f"Saved mask: {saved['mask_path']}")

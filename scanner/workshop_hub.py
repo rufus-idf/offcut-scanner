@@ -44,6 +44,24 @@ SHAPES_HEADERS = [
     "version",
 ]
 
+EVENTS_HEADERS = [
+    "event_id",
+    "offcut_id",
+    "event_type",
+    "event_at_utc",
+    "job_id",
+    "user",
+    "payload_json",
+]
+
+PREVIEWS_HEADERS = [
+    "preview_ref",
+    "offcut_id",
+    "svg_path_data",
+    "scale_hint",
+    "updated_at_utc",
+]
+
 DEFAULT_SETTINGS = {
     "material": "",
     "thickness_mm": 0.0,
@@ -117,6 +135,7 @@ def build_ids(captured_at_utc: str) -> dict[str, str]:
         "offcut_id": offcut_id,
         "shape_ref": f"SHAPE-{stamp}-{suffix}",
         "preview_ref": f"PREV-{stamp}-{suffix}",
+        "event_id": f"EVT-{stamp}-{suffix}",
     }
 
 
@@ -157,10 +176,34 @@ def build_shape_row(scan_payload: dict[str, Any], ids: dict[str, str]) -> dict[s
     }
 
 
+def build_event_row(scan_payload: dict[str, Any], metadata: dict[str, Any], ids: dict[str, str]) -> dict[str, Any]:
+    return {
+        "event_id": ids["event_id"],
+        "offcut_id": ids["offcut_id"],
+        "event_type": "CAPTURED",
+        "event_at_utc": scan_payload["captured_at_utc"],
+        "job_id": metadata["sheet_origin_job"],
+        "user": "",
+        "payload_json": json.dumps(scan_payload),
+    }
+
+
+def build_preview_row(scan_payload: dict[str, Any], ids: dict[str, str]) -> dict[str, Any]:
+    return {
+        "preview_ref": ids["preview_ref"],
+        "offcut_id": ids["offcut_id"],
+        "svg_path_data": scan_payload["svg_path_data"],
+        "scale_hint": "mm",
+        "updated_at_utc": scan_payload["captured_at_utc"],
+    }
+
+
 def build_workshop_bundle(scan_payload: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     ids = build_ids(scan_payload["captured_at_utc"])
     inventory_row = build_inventory_row(scan_payload, metadata, ids)
     shape_row = build_shape_row(scan_payload, ids)
+    event_row = build_event_row(scan_payload, metadata, ids)
+    preview_row = build_preview_row(scan_payload, ids)
 
     return {
         "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -168,6 +211,8 @@ def build_workshop_bundle(scan_payload: dict[str, Any], metadata: dict[str, Any]
         "sheet_tabs": {
             "offcut_inventory": [inventory_row],
             "offcut_shapes": [shape_row],
+            "offcut_events": [event_row],
+            "offcut_previews": [preview_row],
         },
         "raw_scan_payload": scan_payload,
     }
@@ -193,6 +238,10 @@ def post_workshop_bundle(push_url: str, bundle: dict[str, Any], timeout_seconds:
                     parsed_body = json.loads(body)
                 except json.JSONDecodeError:
                     parsed_body = body
+
+            if isinstance(parsed_body, dict) and parsed_body.get("ok") is False:
+                error_message = parsed_body.get("error") or "Unknown Apps Script error."
+                raise RuntimeError(f"Sheet push was rejected by Apps Script: {error_message}")
 
             return {
                 "status_code": response.status,

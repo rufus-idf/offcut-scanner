@@ -32,6 +32,22 @@ const TAB_CONFIG = {
     'holes_json',
     'version',
   ],
+  offcut_events: [
+    'event_id',
+    'offcut_id',
+    'event_type',
+    'event_at_utc',
+    'job_id',
+    'user',
+    'payload_json',
+  ],
+  offcut_previews: [
+    'preview_ref',
+    'offcut_id',
+    'svg_path_data',
+    'scale_hint',
+    'updated_at_utc',
+  ],
 };
 
 function doGet() {
@@ -50,14 +66,21 @@ function doPost(e) {
 
     const inventoryRows = payload.sheet_tabs && payload.sheet_tabs.offcut_inventory ? payload.sheet_tabs.offcut_inventory : [];
     const shapeRows = payload.sheet_tabs && payload.sheet_tabs.offcut_shapes ? payload.sheet_tabs.offcut_shapes : [];
+    const eventRows = payload.sheet_tabs && payload.sheet_tabs.offcut_events ? payload.sheet_tabs.offcut_events : [];
+    const previewRows = payload.sheet_tabs && payload.sheet_tabs.offcut_previews ? payload.sheet_tabs.offcut_previews : [];
 
     appendRows_(spreadsheet, 'offcut_inventory', TAB_CONFIG.offcut_inventory, inventoryRows);
     appendRows_(spreadsheet, 'offcut_shapes', TAB_CONFIG.offcut_shapes, shapeRows);
+    appendRows_(spreadsheet, 'offcut_events', TAB_CONFIG.offcut_events, eventRows);
+    appendRows_(spreadsheet, 'offcut_previews', TAB_CONFIG.offcut_previews, previewRows);
 
     return jsonResponse_({
       ok: true,
+      spreadsheet_name: spreadsheet.getName(),
       inventory_rows_written: inventoryRows.length,
       shape_rows_written: shapeRows.length,
+      event_rows_written: eventRows.length,
+      preview_rows_written: previewRows.length,
       received_at_utc: new Date().toISOString(),
     });
   } catch (error) {
@@ -74,23 +97,30 @@ function appendRows_(spreadsheet, tabName, headers, rows) {
   }
 
   const sheet = spreadsheet.getSheetByName(tabName) || spreadsheet.insertSheet(tabName);
-  ensureHeaders_(sheet, headers);
+  const sheetHeaders = ensureHeaders_(sheet, headers);
 
-  const values = rows.map((row) => headers.map((header) => normalizeCell_(row[header])));
-  sheet.getRange(sheet.getLastRow() + 1, 1, values.length, headers.length).setValues(values);
+  const values = rows.map((row) => sheetHeaders.map((header) => normalizeCell_(row[header])));
+  sheet.getRange(sheet.getLastRow() + 1, 1, values.length, sheetHeaders.length).setValues(values);
 }
 
 function ensureHeaders_(sheet, headers) {
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    return;
+    return headers;
   }
 
-  const existing = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-  const mismatch = headers.some((header, index) => existing[index] !== header);
-  if (mismatch) {
-    throw new Error(`Header mismatch in tab ${sheet.getName()}.`);
+  const existingWidth = Math.max(sheet.getLastColumn(), headers.length);
+  const existing = sheet.getRange(1, 1, 1, existingWidth).getValues()[0];
+  const normalizedExisting = existing.map((header) => String(header || '').trim());
+
+  const missingHeaders = headers.filter((header) => !normalizedExisting.includes(header));
+  if (missingHeaders.length > 0) {
+    const startColumn = normalizedExisting.length + 1;
+    sheet.getRange(1, startColumn, 1, missingHeaders.length).setValues([missingHeaders]);
+    normalizedExisting.push(...missingHeaders);
   }
+
+  return normalizedExisting;
 }
 
 function normalizeCell_(value) {
