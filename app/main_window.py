@@ -154,6 +154,7 @@ class MainWindow(QMainWindow):
         self.save_calibration_button.setEnabled(False)
 
         self._build_layout()
+        self.apply_modern_theme()
         self._connect_export_form()
         self.refresh_material_options()
 
@@ -273,6 +274,111 @@ class MainWindow(QMainWindow):
         central_layout = QHBoxLayout(central)
         central_layout.addWidget(splitter)
         self.setCentralWidget(central)
+
+    def apply_modern_theme(self):
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget {
+                background-color: #111827;
+                color: #E5E7EB;
+                font-size: 13px;
+            }
+            QGroupBox {
+                background-color: #1F2937;
+                border: 1px solid #374151;
+                border-radius: 14px;
+                margin-top: 14px;
+                padding: 14px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 14px;
+                padding: 0 6px;
+                color: #F9FAFB;
+            }
+            QPushButton {
+                background-color: #2563EB;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 10px 14px;
+                min-height: 18px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #3B82F6;
+            }
+            QPushButton:pressed {
+                background-color: #1D4ED8;
+            }
+            QPushButton:disabled {
+                background-color: #374151;
+                color: #9CA3AF;
+            }
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QScrollArea {
+                background-color: #0F172A;
+                color: #E5E7EB;
+                border: 1px solid #334155;
+                border-radius: 10px;
+                padding: 8px;
+                selection-background-color: #2563EB;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 26px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #0F172A;
+                color: #E5E7EB;
+                border: 1px solid #334155;
+                selection-background-color: #2563EB;
+            }
+            QLabel {
+                color: #E5E7EB;
+            }
+            QCheckBox {
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 1px solid #64748B;
+                background-color: #0F172A;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #2563EB;
+                border: 1px solid #2563EB;
+            }
+            QScrollBar:vertical {
+                background: #111827;
+                width: 12px;
+                margin: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #475569;
+                border-radius: 6px;
+                min-height: 30px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QSplitter::handle {
+                background-color: #1E293B;
+                width: 6px;
+            }
+            """
+        )
+        self.preview_label.setStyleSheet(
+            """
+            background-color: #020617;
+            color: #CBD5E1;
+            border: 1px solid #334155;
+            border-radius: 18px;
+            padding: 12px;
+            """
+        )
 
     def log(self, message):
         self.log_view.appendPlainText(message)

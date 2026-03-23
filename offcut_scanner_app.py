@@ -8,6 +8,7 @@ from app.main_window import MainWindow
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Offcut Scanner")
+    app.setStyle("Fusion")
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
