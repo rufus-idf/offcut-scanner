@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QSplitter,
     QScrollArea,
+    QSlider,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -64,7 +65,7 @@ class MainWindow(QMainWindow):
         self.is_saving = False
 
         self.preview_label = ClickablePreviewLabel("Camera not started")
-        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.preview_label.setMinimumSize(960, 720)
         self.preview_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.preview_label.setStyleSheet("background-color: #111; color: #ddd; border: 1px solid #444;")
@@ -73,6 +74,7 @@ class MainWindow(QMainWindow):
         self.preview_target_rect = None
         self.calibration_mode = False
         self.calibration_points_px = []
+        self.zoom_factor = 1.0
 
         self.status_label = QLabel("Ready")
         self.status_label.setWordWrap(True)
@@ -134,6 +136,14 @@ class MainWindow(QMainWindow):
         self.bed_height_input.setRange(50.0, 10000.0)
         self.bed_height_input.setDecimals(1)
         self.bed_height_input.setValue(300.0)
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(100, 400)
+        self.zoom_slider.setSingleStep(5)
+        self.zoom_slider.setValue(100)
+        self.zoom_label = QLabel("100%")
+        self.zoom_in_button = QPushButton("Zoom +")
+        self.zoom_out_button = QPushButton("Zoom -")
+        self.zoom_reset_button = QPushButton("Reset Zoom")
 
         self.start_button = QPushButton("Start Camera")
         self.stop_button = QPushButton("Stop Camera")
@@ -155,6 +165,10 @@ class MainWindow(QMainWindow):
         self.start_calibration_button.clicked.connect(self.start_calibration_mode)
         self.reset_calibration_points_button.clicked.connect(self.reset_calibration_points)
         self.save_calibration_button.clicked.connect(self.save_calibration)
+        self.zoom_slider.valueChanged.connect(self.on_zoom_changed)
+        self.zoom_in_button.clicked.connect(lambda: self.zoom_slider.setValue(min(400, self.zoom_slider.value() + 25)))
+        self.zoom_out_button.clicked.connect(lambda: self.zoom_slider.setValue(max(100, self.zoom_slider.value() - 25)))
+        self.zoom_reset_button.clicked.connect(lambda: self.zoom_slider.setValue(100))
 
         self.stop_button.setEnabled(False)
         self.capture_baseline_button.setEnabled(False)
@@ -196,7 +210,10 @@ class MainWindow(QMainWindow):
     def _build_layout(self):
         preview_container = QWidget()
         preview_layout = QVBoxLayout(preview_container)
-        preview_layout.addWidget(self.preview_label)
+        self.preview_scroll = QScrollArea()
+        self.preview_scroll.setWidgetResizable(False)
+        self.preview_scroll.setWidget(self.preview_label)
+        preview_layout.addWidget(self.preview_scroll)
 
         controls_box = QGroupBox("Controls")
         controls_layout = QVBoxLayout(controls_box)
@@ -271,6 +288,15 @@ class MainWindow(QMainWindow):
         calibration_layout = QFormLayout(calibration_box)
         calibration_layout.addRow("Bed width (mm)", self.bed_width_input)
         calibration_layout.addRow("Bed height (mm)", self.bed_height_input)
+        zoom_buttons_row = QWidget()
+        zoom_buttons_layout = QHBoxLayout(zoom_buttons_row)
+        zoom_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        zoom_buttons_layout.addWidget(self.zoom_out_button)
+        zoom_buttons_layout.addWidget(self.zoom_in_button)
+        zoom_buttons_layout.addWidget(self.zoom_reset_button)
+        calibration_layout.addRow("Calibration Zoom", self.zoom_slider)
+        calibration_layout.addRow("Zoom Level", self.zoom_label)
+        calibration_layout.addRow("", zoom_buttons_row)
         calibration_hint = QLabel("Click the 4 bed corners in preview: top-left, top-right, bottom-right, bottom-left.")
         calibration_hint.setWordWrap(True)
         calibration_layout.addRow(calibration_hint)
@@ -531,15 +557,18 @@ class MainWindow(QMainWindow):
         bytes_per_line = channels * width
         qt_image = QImage(rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_image.copy())
+        viewport_size = self.preview_scroll.viewport().size()
+        base_width = max(1, viewport_size.width())
+        base_height = max(1, viewport_size.height())
         scaled = pixmap.scaled(
-            self.preview_label.size(),
+            base_width * self.zoom_factor,
+            base_height * self.zoom_factor,
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation,
         )
         self.preview_image_shape = (height, width)
-        x_offset = (self.preview_label.width() - scaled.width()) // 2
-        y_offset = (self.preview_label.height() - scaled.height()) // 2
-        self.preview_target_rect = (x_offset, y_offset, scaled.width(), scaled.height())
+        self.preview_target_rect = (0, 0, scaled.width(), scaled.height())
+        self.preview_label.resize(scaled.size())
         self.preview_label.setPixmap(scaled)
 
     def resizeEvent(self, event):
@@ -633,6 +662,13 @@ class MainWindow(QMainWindow):
         self.materials_preflight_value.setText(f"Ready ({len(materials)})")
         self.log(f"Loaded {len(materials)} materials from texture_library.")
 
+    def on_zoom_changed(self, value):
+        self.zoom_factor = float(value) / 100.0
+        self.zoom_label.setText(f"{value}%")
+        active_view = self.frozen_view if self.freeze_active else self.engine.latest_view
+        if active_view is not None:
+            self.set_preview_image(active_view.preview_image)
+
     def handle_preview_click(self, x, y):
         if not self.calibration_mode or self.preview_image_shape is None or self.preview_target_rect is None:
             return
@@ -675,13 +711,16 @@ class MainWindow(QMainWindow):
         self.freeze_button.setEnabled(True)
         self.refresh_calibration_status()
         self.update_baseline_status()
-        self.camera_preflight_value.setText("Running")
+        if self.engine.stream_width and self.engine.stream_height and self.engine.stream_fps:
+            self.camera_preflight_value.setText(f"Running ({self.engine.stream_width}x{self.engine.stream_height}@{self.engine.stream_fps})")
+        else:
+            self.camera_preflight_value.setText("Running")
         if self.engine.has_calibration():
             self.status_label.setText("Camera started.")
-            self.log("Camera started.")
+            self.log(f"Camera started at {self.camera_preflight_value.text()}.")
         else:
             self.status_label.setText("Camera started. No saved calibration found.")
-            self.log("Camera started. No saved calibration found; use in-app calibration.")
+            self.log(f"Camera started at {self.camera_preflight_value.text()}. No saved calibration found; use in-app calibration.")
 
     def stop_camera(self):
         self.timer.stop()

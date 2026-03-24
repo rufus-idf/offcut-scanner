@@ -19,6 +19,11 @@ DEPTH_SAMPLE_RADIUS_PX = 2
 MIN_BED_PLANE_SCALE = 0.85
 DEFAULT_BED_WIDTH_MM = 400.0
 DEFAULT_BED_HEIGHT_MM = 300.0
+STREAM_MODES = [
+    (1280, 720, 30),
+    (848, 480, 30),
+    (640, 480, 30),
+]
 
 
 @dataclass
@@ -45,6 +50,9 @@ class OffcutScannerEngine:
         self.baseline_file = str(self.resolve_runtime_path(baseline_file or "baseline_depth.npy"))
         self.calibration_snapshot_file = str(self.resolve_runtime_path("calibration_snapshot.png"))
         os.makedirs(self.capture_dir, exist_ok=True)
+        self.stream_width = None
+        self.stream_height = None
+        self.stream_fps = None
 
         self.pipeline = None
         self.align = None
@@ -349,12 +357,29 @@ class OffcutScannerEngine:
     def start_camera(self):
         self.load_calibration(required=False)
 
-        self.pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        profile = None
+        last_error = None
+        for width, height, fps in STREAM_MODES:
+            trial_pipeline = rs.pipeline()
+            config = rs.config()
+            config.enable_stream(rs.stream.depth, width, height, rs.format.z16, fps)
+            config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
+            try:
+                profile = trial_pipeline.start(config)
+                self.pipeline = trial_pipeline
+                self.stream_width = width
+                self.stream_height = height
+                self.stream_fps = fps
+                break
+            except Exception as exc:
+                last_error = exc
+                try:
+                    trial_pipeline.stop()
+                except Exception:
+                    pass
 
-        profile = self.pipeline.start(config)
+        if profile is None or self.pipeline is None:
+            raise RuntimeError(f"Failed to start RealSense stream in supported modes: {last_error}")
 
         depth_sensor = profile.get_device().first_depth_sensor()
         self.depth_scale = depth_sensor.get_depth_scale()
@@ -382,6 +407,9 @@ class OffcutScannerEngine:
         self.latest_depth_mm = None
         self.latest_color_image = None
         self.latest_view = None
+        self.stream_width = None
+        self.stream_height = None
+        self.stream_fps = None
 
     def capture_baseline(self):
         if self.latest_depth_mm is None:
