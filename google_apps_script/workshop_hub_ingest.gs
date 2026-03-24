@@ -79,7 +79,7 @@ function doPost(e) {
     const eventRows = payload.sheet_tabs && payload.sheet_tabs.offcut_events ? payload.sheet_tabs.offcut_events : [];
     const previewRows = payload.sheet_tabs && payload.sheet_tabs.offcut_previews ? payload.sheet_tabs.offcut_previews : [];
 
-    appendRows_(spreadsheet, 'offcut_inventory', TAB_CONFIG.offcut_inventory, inventoryRows);
+    const inventoryResult = upsertInventoryRows_(spreadsheet, TAB_CONFIG.offcut_inventory, inventoryRows);
     appendRows_(spreadsheet, 'offcut_shapes', TAB_CONFIG.offcut_shapes, shapeRows);
     appendRows_(spreadsheet, 'offcut_events', TAB_CONFIG.offcut_events, eventRows);
     appendRows_(spreadsheet, 'offcut_previews', TAB_CONFIG.offcut_previews, previewRows);
@@ -87,7 +87,8 @@ function doPost(e) {
     return jsonResponse_({
       ok: true,
       spreadsheet_name: spreadsheet.getName(),
-      inventory_rows_written: inventoryRows.length,
+      inventory_rows_written: inventoryResult.rows_written,
+      inventory_rows_merged: inventoryResult.rows_merged,
       shape_rows_written: shapeRows.length,
       event_rows_written: eventRows.length,
       preview_rows_written: previewRows.length,
@@ -111,6 +112,107 @@ function appendRows_(spreadsheet, tabName, headers, rows) {
 
   const values = rows.map((row) => sheetHeaders.map((header) => normalizeCell_(row[header])));
   sheet.getRange(sheet.getLastRow() + 1, 1, values.length, sheetHeaders.length).setValues(values);
+}
+
+function upsertInventoryRows_(spreadsheet, headers, rows) {
+  if (!rows || rows.length === 0) {
+    return { rows_written: 0, rows_merged: 0 };
+  }
+
+  const sheet = spreadsheet.getSheetByName('offcut_inventory') || spreadsheet.insertSheet('offcut_inventory');
+  const sheetHeaders = ensureHeaders_(sheet, headers);
+  const columnIndex = indexHeaders_(sheetHeaders);
+
+  let rowsWritten = 0;
+  let rowsMerged = 0;
+
+  rows.forEach((row) => {
+    const matchRowNumber = findMatchingInventoryRow_(sheet, columnIndex, row);
+    const rowQty = toNumber_(row.qty, 0) || 1;
+
+    if (matchRowNumber > 0) {
+      const qtyColumn = columnIndex.qty;
+      if (!qtyColumn) {
+        throw new Error("offcut_inventory is missing 'qty' column.");
+      }
+
+      const currentQty = toNumber_(sheet.getRange(matchRowNumber, qtyColumn).getValue(), 0);
+      sheet.getRange(matchRowNumber, qtyColumn).setValue(currentQty + rowQty);
+      rowsMerged += 1;
+      return;
+    }
+
+    const values = sheetHeaders.map((header) => normalizeCell_(row[header]));
+    sheet.getRange(sheet.getLastRow() + 1, 1, 1, sheetHeaders.length).setValues([values]);
+    rowsWritten += 1;
+  });
+
+  return { rows_written: rowsWritten, rows_merged: rowsMerged };
+}
+
+function findMatchingInventoryRow_(sheet, columnIndex, candidateRow) {
+  if (sheet.getLastRow() < 2) {
+    return 0;
+  }
+
+  const required = ['material', 'shape_type', 'bbox_w_mm', 'bbox_h_mm'];
+  const missing = required.filter((key) => !columnIndex[key]);
+  if (missing.length > 0) {
+    throw new Error(`offcut_inventory is missing columns: ${missing.join(', ')}`);
+  }
+
+  const widthTarget = toNumber_(candidateRow.bbox_w_mm, null);
+  const heightTarget = toNumber_(candidateRow.bbox_h_mm, null);
+  const materialTarget = String(candidateRow.material || '').trim().toLowerCase();
+  const shapeTarget = String(candidateRow.shape_type || '').trim().toUpperCase();
+
+  if (widthTarget === null || heightTarget === null || !materialTarget || !shapeTarget) {
+    return 0;
+  }
+
+  const rowCount = sheet.getLastRow() - 1;
+  const colCount = sheet.getLastColumn();
+  const values = sheet.getRange(2, 1, rowCount, colCount).getValues();
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const materialValue = String(row[columnIndex.material - 1] || '').trim().toLowerCase();
+    const shapeValue = String(row[columnIndex.shape_type - 1] || '').trim().toUpperCase();
+    const widthValue = toNumber_(row[columnIndex.bbox_w_mm - 1], null);
+    const heightValue = toNumber_(row[columnIndex.bbox_h_mm - 1], null);
+
+    if (materialValue !== materialTarget || shapeValue !== shapeTarget) {
+      continue;
+    }
+    if (widthValue === null || heightValue === null) {
+      continue;
+    }
+
+    if (Math.abs(widthValue - widthTarget) <= 0.05 && Math.abs(heightValue - heightTarget) <= 0.05) {
+      return i + 2;
+    }
+  }
+
+  return 0;
+}
+
+function indexHeaders_(headers) {
+  const index = {};
+  headers.forEach((header, i) => {
+    const key = String(header || '').trim();
+    if (key) {
+      index[key] = i + 1;
+    }
+  });
+  return index;
+}
+
+function toNumber_(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return numeric;
 }
 
 function ensureHeaders_(sheet, headers) {

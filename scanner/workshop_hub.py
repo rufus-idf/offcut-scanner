@@ -154,17 +154,16 @@ def size_code(scan_payload: dict[str, Any], metadata: dict[str, Any]) -> str:
 
 
 def build_ids(scan_payload: dict[str, Any], metadata: dict[str, Any]) -> dict[str, str]:
-    stamp = short_timestamp(scan_payload["captured_at_utc"])
     material_tag = material_code(metadata["material"])
     shape_tag = map_shape_type(scan_payload["shape_type"])
-    size_tag = size_code(scan_payload, metadata)
-    suffix = uuid.uuid4().hex[:3].upper()
-    offcut_id = f"OC-{stamp}-{material_tag}-{shape_tag}-{size_tag}-{suffix}"
+    area_tag = f"{float(scan_payload['area_mm2']):.1f}"
+    suffix = uuid.uuid4().hex[:6].upper()
+    offcut_id = f"{material_tag}-{shape_tag}-{area_tag}"
     return {
         "offcut_id": offcut_id,
-        "shape_ref": f"{offcut_id}-SHP",
-        "preview_ref": f"{offcut_id}-PREV",
-        "event_id": f"{offcut_id}-CAP",
+        "shape_ref": f"{offcut_id}-SHP-{suffix}",
+        "preview_ref": f"{offcut_id}-PREV-{suffix}",
+        "event_id": f"{offcut_id}-CAP-{suffix}",
     }
 
 
