@@ -47,6 +47,8 @@ class ClickablePreviewLabel(QLabel):
 
 
 class MainWindow(QMainWindow):
+    APP_VERSION = "v1.0.0"
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Offcut Scanner")
@@ -59,6 +61,7 @@ class MainWindow(QMainWindow):
 
         self.frozen_view = None
         self.freeze_active = False
+        self.is_saving = False
 
         self.preview_label = ClickablePreviewLabel("Camera not started")
         self.preview_label.setAlignment(Qt.AlignCenter)
@@ -80,6 +83,13 @@ class MainWindow(QMainWindow):
         self.calibration_value = QLabel("Not loaded")
         self.baseline_value = QLabel("Not captured")
         self.export_status_value = QLabel("Not prepared")
+        self.version_value = QLabel(self.APP_VERSION)
+        self.camera_preflight_value = QLabel("Not started")
+        self.calibration_preflight_value = QLabel("Missing")
+        self.baseline_preflight_value = QLabel("Missing")
+        self.materials_preflight_value = QLabel("Loading")
+        self.sheets_preflight_value = QLabel("Not tested")
+        self.last_push_value = QLabel("No pushes yet")
 
         self.json_view = QPlainTextEdit()
         self.json_view.setReadOnly(True)
@@ -131,6 +141,7 @@ class MainWindow(QMainWindow):
         self.freeze_button = QPushButton("Freeze Scan")
         self.resume_button = QPushButton("Resume Live")
         self.save_button = QPushButton("Save Scan")
+        self.retry_pending_pushes_button = QPushButton("Retry Pending Pushes")
 
         self.start_button.clicked.connect(self.start_camera)
         self.stop_button.clicked.connect(self.stop_camera)
@@ -138,6 +149,7 @@ class MainWindow(QMainWindow):
         self.freeze_button.clicked.connect(self.freeze_scan)
         self.resume_button.clicked.connect(self.resume_live)
         self.save_button.clicked.connect(self.save_scan)
+        self.retry_pending_pushes_button.clicked.connect(self.retry_pending_pushes)
         self.push_now_button.clicked.connect(self.save_and_push_scan)
         self.refresh_materials_button.clicked.connect(self.refresh_material_options)
         self.start_calibration_button.clicked.connect(self.start_calibration_mode)
@@ -153,6 +165,7 @@ class MainWindow(QMainWindow):
         self.start_calibration_button.setEnabled(False)
         self.reset_calibration_points_button.setEnabled(False)
         self.save_calibration_button.setEnabled(False)
+        self.retry_pending_pushes_button.setEnabled(False)
 
         self._build_layout()
         self.apply_modern_theme()
@@ -193,6 +206,7 @@ class MainWindow(QMainWindow):
             self.freeze_button,
             self.resume_button,
             self.save_button,
+            self.retry_pending_pushes_button,
         ]:
             controls_layout.addWidget(button)
         controls_layout.addStretch(1)
@@ -225,6 +239,25 @@ class MainWindow(QMainWindow):
             label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             results_layout.addWidget(label, row, 0)
             results_layout.addWidget(widget, row, 1)
+
+        preflight_box = QGroupBox("Preflight")
+        preflight_layout = QGridLayout(preflight_box)
+        preflight_rows = [
+            ("Camera", self.camera_preflight_value),
+            ("Calibration", self.calibration_preflight_value),
+            ("Baseline", self.baseline_preflight_value),
+            ("Materials", self.materials_preflight_value),
+            ("Sheets Push", self.sheets_preflight_value),
+            ("App Version", self.version_value),
+        ]
+        for row, (label_text, widget) in enumerate(preflight_rows):
+            preflight_layout.addWidget(QLabel(label_text), row, 0)
+            preflight_layout.addWidget(widget, row, 1)
+
+        last_push_box = QGroupBox("Last Push Result")
+        self.last_push_value.setWordWrap(True)
+        last_push_layout = QVBoxLayout(last_push_box)
+        last_push_layout.addWidget(self.last_push_value)
 
         metadata_box = QGroupBox("Workshop Hub Export")
         metadata_layout = QFormLayout(metadata_box)
@@ -281,9 +314,11 @@ class MainWindow(QMainWindow):
             build_tab(
                 [
                     controls_box,
+                    preflight_box,
                     sheets_box,
                     metadata_box,
                     results_box,
+                    last_push_box,
                 ],
                 add_stretch=True,
             ),
@@ -516,6 +551,7 @@ class MainWindow(QMainWindow):
     def refresh_calibration_status(self):
         if self.engine.has_calibration():
             self.calibration_value.setText(Path(self.engine.calibration_file).name)
+            self.calibration_preflight_value.setText("Ready")
             if self.engine.bed_points_mm is not None and len(self.engine.bed_points_mm) >= 3:
                 width_mm = float(self.engine.bed_points_mm[1][0] - self.engine.bed_points_mm[0][0])
                 height_mm = float(self.engine.bed_points_mm[2][1] - self.engine.bed_points_mm[1][1])
@@ -523,9 +559,52 @@ class MainWindow(QMainWindow):
                 self.bed_height_input.setValue(height_mm)
         else:
             self.calibration_value.setText("Not calibrated")
+            self.calibration_preflight_value.setText("Missing")
 
     def update_baseline_status(self):
-        self.baseline_value.setText("Captured" if self.engine.has_baseline() else "Not captured")
+        has_baseline = self.engine.has_baseline()
+        self.baseline_value.setText("Captured" if has_baseline else "Not captured")
+        self.baseline_preflight_value.setText("Ready" if has_baseline else "Missing")
+
+    def pending_push_dir(self):
+        return Path(self.engine.runtime_dir) / "pending_pushes"
+
+    def list_pending_push_files(self):
+        pending_dir = self.pending_push_dir()
+        if not pending_dir.exists():
+            return []
+        return sorted(pending_dir.glob("*_pending_push.json"))
+
+    def enqueue_pending_push(self, bundle):
+        pending_dir = self.pending_push_dir()
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        pending_path = pending_dir / f"{self.engine.timestamp_id()}_pending_push.json"
+        with pending_path.open("w", encoding="utf-8") as f:
+            json.dump(bundle, f, indent=2)
+        self.log(f"Queued pending push: {pending_path}")
+        return pending_path
+
+    def set_saving_state(self, busy):
+        self.is_saving = busy
+        if busy:
+            self.status_label.setText("Saving...")
+
+        if self.engine.pipeline is None:
+            self.start_button.setEnabled(not busy)
+            self.stop_button.setEnabled(False)
+        else:
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(not busy)
+
+        if self.engine.latest_view is not None:
+            has_detection = self.engine.latest_view.has_detection
+            self.save_button.setEnabled((not busy) and has_detection)
+            self.push_now_button.setEnabled((not busy) and has_detection)
+        else:
+            self.save_button.setEnabled(False)
+            self.push_now_button.setEnabled(False)
+
+        self.retry_pending_pushes_button.setEnabled((not busy) and len(self.list_pending_push_files()) > 0)
 
     def refresh_material_options(self):
         current_value = self.material_input.currentText().strip() or self.saved_material_name
@@ -536,6 +615,7 @@ class MainWindow(QMainWindow):
             self.material_input.addItem("Unable to load materials")
             self.material_input.setEnabled(False)
             self.export_status_value.setText("Material list unavailable")
+            self.materials_preflight_value.setText("Unavailable")
             self.log(f"Material list refresh failed: {exc}")
             return
 
@@ -550,6 +630,7 @@ class MainWindow(QMainWindow):
             self.material_input.setCurrentText(self.saved_material_name)
         elif materials:
             self.material_input.setCurrentIndex(0)
+        self.materials_preflight_value.setText(f"Ready ({len(materials)})")
         self.log(f"Loaded {len(materials)} materials from texture_library.")
 
     def handle_preview_click(self, x, y):
@@ -586,6 +667,7 @@ class MainWindow(QMainWindow):
         self.timer.start()
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.retry_pending_pushes_button.setEnabled(len(self.list_pending_push_files()) > 0)
         self.capture_baseline_button.setEnabled(self.engine.has_calibration())
         self.start_calibration_button.setEnabled(True)
         self.reset_calibration_points_button.setEnabled(False)
@@ -593,6 +675,7 @@ class MainWindow(QMainWindow):
         self.freeze_button.setEnabled(True)
         self.refresh_calibration_status()
         self.update_baseline_status()
+        self.camera_preflight_value.setText("Running")
         if self.engine.has_calibration():
             self.status_label.setText("Camera started.")
             self.log("Camera started.")
@@ -615,11 +698,13 @@ class MainWindow(QMainWindow):
         self.start_calibration_button.setEnabled(False)
         self.reset_calibration_points_button.setEnabled(False)
         self.save_calibration_button.setEnabled(False)
+        self.retry_pending_pushes_button.setEnabled(False)
         self.freeze_button.setEnabled(False)
         self.resume_button.setEnabled(False)
         self.save_button.setEnabled(False)
         self.push_now_button.setEnabled(False)
         self.status_label.setText("Camera stopped.")
+        self.camera_preflight_value.setText("Stopped")
         self.log("Camera stopped.")
 
     def refresh_frame(self):
@@ -670,7 +755,9 @@ class MainWindow(QMainWindow):
             self.export_status_value.setText(str(exc))
             self.json_view.setPlainText(json.dumps({"scan_payload": payload}, indent=2))
         self.save_button.setEnabled(view.has_detection)
-        self.push_now_button.setEnabled(view.has_detection)
+        self.push_now_button.setEnabled(view.has_detection and not self.is_saving)
+        if self.is_saving:
+            self.save_button.setEnabled(False)
 
     def current_export_metadata(self):
         return {
@@ -845,10 +932,12 @@ class MainWindow(QMainWindow):
 
         bundle = build_workshop_bundle(scan_result["payload"], metadata)
         self.persist_export_settings()
+        self.set_saving_state(True)
 
         try:
             saved = self.engine.save_scan_result(scan_result, workshop_bundle=bundle)
         except Exception as exc:
+            self.set_saving_state(False)
             QMessageBox.critical(self, "Save Error", str(exc))
             self.log(f"Save failed: {exc}")
             return
@@ -858,20 +947,27 @@ class MainWindow(QMainWindow):
             try:
                 response = post_workshop_bundle(metadata["push_url"], bundle)
             except Exception as exc:
+                pending_path = self.enqueue_pending_push(bundle)
+                self.sheets_preflight_value.setText("Failed (queued)")
+                self.last_push_value.setText(f"Failed and queued: {pending_path.name}")
+                self.retry_pending_pushes_button.setEnabled(True)
+                self.set_saving_state(False)
                 QMessageBox.critical(self, "Sheet Push Error", str(exc))
                 self.log(f"Sheet push failed: {exc}")
                 return
 
             response_body = response["body"]
             push_message = f"Sheet push OK (HTTP {response['status_code']})."
+            self.sheets_preflight_value.setText("OK")
             if isinstance(response_body, dict):
                 spreadsheet_name = response_body.get("spreadsheet_name")
                 inventory_rows = response_body.get("inventory_rows_written")
+                inventory_merged = response_body.get("inventory_rows_merged")
                 shape_rows = response_body.get("shape_rows_written")
                 event_rows = response_body.get("event_rows_written")
                 preview_rows = response_body.get("preview_rows_written")
                 counts = (
-                    f"inventory={inventory_rows}, shapes={shape_rows}, "
+                    f"inventory_new={inventory_rows}, inventory_merged={inventory_merged}, shapes={shape_rows}, "
                     f"events={event_rows}, previews={preview_rows}"
                 )
                 if spreadsheet_name:
@@ -879,6 +975,7 @@ class MainWindow(QMainWindow):
                 else:
                     push_message = f"Sheet push OK (HTTP {response['status_code']}; {counts})."
             self.log(f"Sheet push response: {response_body}")
+            self.last_push_value.setText(push_message)
 
         self.log(f"Saved preview: {saved['image_path']}")
         self.log(f"Saved mask: {saved['mask_path']}")
@@ -896,7 +993,49 @@ class MainWindow(QMainWindow):
                 f"{push_message}"
             ),
         )
+        self.retry_pending_pushes_button.setEnabled(len(self.list_pending_push_files()) > 0)
+        self.set_saving_state(False)
 
     def save_and_push_scan(self):
         self.push_on_save_checkbox.setChecked(True)
         self.save_scan(force_push=True)
+
+    def retry_pending_pushes(self):
+        pending_files = self.list_pending_push_files()
+        if not pending_files:
+            QMessageBox.information(self, "Retry Pending Pushes", "There are no queued pushes.")
+            return
+
+        self.set_saving_state(True)
+        pushed = 0
+        failed = 0
+        last_error = ""
+
+        for pending_file in pending_files:
+            try:
+                with pending_file.open("r", encoding="utf-8") as f:
+                    bundle = json.load(f)
+                response = post_workshop_bundle(DEFAULT_PUSH_URL, bundle)
+                self.log(f"Retried {pending_file.name}: HTTP {response['status_code']}")
+                pending_file.unlink()
+                pushed += 1
+            except Exception as exc:
+                failed += 1
+                last_error = str(exc)
+                self.log(f"Retry failed for {pending_file.name}: {exc}")
+
+        self.set_saving_state(False)
+        self.retry_pending_pushes_button.setEnabled(len(self.list_pending_push_files()) > 0)
+
+        if failed == 0:
+            self.sheets_preflight_value.setText("OK")
+            self.last_push_value.setText(f"Retried queued pushes: {pushed} succeeded.")
+            QMessageBox.information(self, "Retry Pending Pushes", f"Successfully pushed {pushed} queued bundles.")
+        else:
+            self.sheets_preflight_value.setText("Failed (queued)")
+            self.last_push_value.setText(f"Retry result: {pushed} succeeded, {failed} failed.")
+            QMessageBox.warning(
+                self,
+                "Retry Pending Pushes",
+                f"Retried queued bundles.\nSucceeded: {pushed}\nFailed: {failed}\nLast error: {last_error}",
+            )
