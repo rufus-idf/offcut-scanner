@@ -860,14 +860,16 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Calibration", "Start the camera and wait for a live frame first.")
             return
 
+        self.engine.clear_calibration(delete_file=True)
         self.calibration_mode = True
         self.calibration_points_px = []
         self.reset_calibration_points_button.setEnabled(True)
         self.save_calibration_button.setEnabled(False)
         self.capture_baseline_button.setEnabled(False)
-        self.baseline_value.setText("Not captured")
+        self.refresh_calibration_status()
+        self.update_baseline_status()
         self.status_label.setText("Calibration mode: click 4 bed corners.")
-        self.log("Calibration mode started. Click the 4 bed corners in the preview.")
+        self.log("Calibration mode started. Existing calibration cleared; click the 4 bed corners in the preview.")
         active_view = self.frozen_view if self.freeze_active else self.engine.latest_view
         if active_view is not None:
             self.set_preview_image(active_view.preview_image)

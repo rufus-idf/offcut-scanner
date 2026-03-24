@@ -203,6 +203,16 @@ class OffcutScannerEngine:
             if baseline_path.exists():
                 baseline_path.unlink()
 
+    def clear_calibration(self, delete_file=False):
+        self.H = None
+        self.H_inv = None
+        self.bed_points_mm = None
+        self.clear_baseline(delete_file=True)
+        if delete_file:
+            calibration_path = Path(self.calibration_file)
+            if calibration_path.exists():
+                calibration_path.unlink()
+
     @staticmethod
     def transform_points_px_to_mm(points_px, H):
         pts = np.array(points_px, dtype=np.float32).reshape(-1, 1, 2)
