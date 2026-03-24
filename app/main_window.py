@@ -190,16 +190,23 @@ class MainWindow(QMainWindow):
         for button in [
             self.start_button,
             self.stop_button,
-            self.capture_baseline_button,
-            self.start_calibration_button,
-            self.reset_calibration_points_button,
-            self.save_calibration_button,
             self.freeze_button,
             self.resume_button,
             self.save_button,
         ]:
             controls_layout.addWidget(button)
         controls_layout.addStretch(1)
+
+        recalibration_controls_box = QGroupBox("Recalibration Controls")
+        recalibration_controls_layout = QVBoxLayout(recalibration_controls_box)
+        for button in [
+            self.capture_baseline_button,
+            self.start_calibration_button,
+            self.reset_calibration_points_button,
+            self.save_calibration_button,
+        ]:
+            recalibration_controls_layout.addWidget(button)
+        recalibration_controls_layout.addStretch(1)
 
         results_box = QGroupBox("Latest Scan")
         results_layout = QGridLayout(results_box)
@@ -285,6 +292,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(
             build_tab(
                 [
+                    recalibration_controls_box,
                     calibration_box,
                 ],
                 add_stretch=True,
