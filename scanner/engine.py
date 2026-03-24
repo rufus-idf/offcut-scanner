@@ -13,7 +13,7 @@ import pyrealsense2 as rs
 
 MIN_HEIGHT_MM = 8
 MIN_CONTOUR_AREA_PX = 5000
-APPROX_EPSILON_RATIO = 0.01
+APPROX_EPSILON_RATIO = 0.02
 HEIGHT_PERCENTILE = 95
 DEPTH_SAMPLE_RADIUS_PX = 2
 MIN_BED_PLANE_SCALE = 0.85
@@ -453,8 +453,7 @@ class OffcutScannerEngine:
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+        mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=1)
 
         return mask, diff_mm
 
