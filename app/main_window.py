@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QSplitter,
     QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
     QFormLayout,
@@ -251,23 +252,58 @@ class MainWindow(QMainWindow):
         log_layout = QVBoxLayout(log_box)
         log_layout.addWidget(self.log_view)
 
-        right_content = QWidget()
-        right_layout = QVBoxLayout(right_content)
-        right_layout.addWidget(controls_box)
-        right_layout.addWidget(results_box)
-        right_layout.addWidget(calibration_box)
-        right_layout.addWidget(sheets_box)
-        right_layout.addWidget(metadata_box)
-        right_layout.addWidget(payload_box, stretch=1)
-        right_layout.addWidget(log_box, stretch=1)
+        def build_tab(contents, add_stretch=False):
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            for item in contents:
+                stretch = 0
+                widget = item
+                if isinstance(item, tuple):
+                    widget, stretch = item
+                tab_layout.addWidget(widget, stretch=stretch)
+            if add_stretch:
+                tab_layout.addStretch(1)
 
-        right_panel = QScrollArea()
-        right_panel.setWidgetResizable(True)
-        right_panel.setWidget(right_content)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(tab)
+            return scroll
+
+        tabs = QTabWidget()
+        tabs.addTab(
+            build_tab(
+                [
+                    controls_box,
+                    sheets_box,
+                    metadata_box,
+                    results_box,
+                ],
+                add_stretch=True,
+            ),
+            "Main Controls",
+        )
+        tabs.addTab(
+            build_tab(
+                [
+                    calibration_box,
+                ],
+                add_stretch=True,
+            ),
+            "Recalibration",
+        )
+        tabs.addTab(
+            build_tab(
+                [
+                    (payload_box, 1),
+                    (log_box, 1),
+                ]
+            ),
+            "Session",
+        )
 
         splitter = QSplitter()
         splitter.addWidget(preview_container)
-        splitter.addWidget(right_panel)
+        splitter.addWidget(tabs)
         splitter.setSizes([950, 450])
 
         central = QWidget()
@@ -296,6 +332,30 @@ class MainWindow(QMainWindow):
                 left: 14px;
                 padding: 0 6px;
                 color: #F9FAFB;
+            }
+            QTabWidget::pane {
+                border: 1px solid #374151;
+                border-radius: 14px;
+                background-color: #111827;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background-color: #1E293B;
+                color: #CBD5E1;
+                border: 1px solid #334155;
+                border-bottom: none;
+                padding: 10px 16px;
+                margin-right: 6px;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                font-weight: 600;
+            }
+            QTabBar::tab:selected {
+                background-color: #2563EB;
+                color: white;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #334155;
             }
             QPushButton {
                 background-color: #2563EB;
