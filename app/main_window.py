@@ -980,6 +980,7 @@ class MainWindow(QMainWindow):
         self.log(f"Saved preview: {saved['image_path']}")
         self.log(f"Saved mask: {saved['mask_path']}")
         self.log(f"Saved json: {saved['json_path']}")
+        self.log(f"Saved dxf: {saved['dxf_path']}")
         if saved["workshop_json_path"]:
             self.log(f"Saved Workshop Hub bundle: {saved['workshop_json_path']}")
         QMessageBox.information(
@@ -989,6 +990,7 @@ class MainWindow(QMainWindow):
                 f"Preview: {saved['image_path']}\n"
                 f"Mask: {saved['mask_path']}\n"
                 f"Scan JSON: {saved['json_path']}\n"
+                f"DXF: {saved['dxf_path']}\n"
                 f"Workshop Bundle: {saved['workshop_json_path']}\n"
                 f"{push_message}"
             ),

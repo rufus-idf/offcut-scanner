@@ -19,6 +19,7 @@ DEPTH_SAMPLE_RADIUS_PX = 2
 MIN_BED_PLANE_SCALE = 0.85
 DEFAULT_BED_WIDTH_MM = 400.0
 DEFAULT_BED_HEIGHT_MM = 300.0
+RECTANGULARITY_THRESHOLD = 0.9
 
 
 @dataclass
@@ -439,6 +440,30 @@ class OffcutScannerEngine:
         return [[float(pt[0][0]), float(pt[0][1])] for pt in approx]
 
     @staticmethod
+    def min_area_rect_vertices(contour):
+        rect = cv2.minAreaRect(contour)
+        box = cv2.boxPoints(rect)
+        return [[float(pt[0]), float(pt[1])] for pt in box]
+
+    @staticmethod
+    def contour_rectangularity(contour):
+        contour_area = float(cv2.contourArea(contour))
+        if contour_area <= 0:
+            return 0.0
+
+        _, (w, h), _ = cv2.minAreaRect(contour)
+        rect_area = float(w * h)
+        if rect_area <= 0:
+            return 0.0
+        return contour_area / rect_area
+
+    def classify_and_select_vertices(self, contour):
+        approx_vertices = self.contour_vertices(contour)
+        if self.contour_rectangularity(contour) >= RECTANGULARITY_THRESHOLD:
+            return "RECT", self.min_area_rect_vertices(contour)
+        return self.classify_shape(approx_vertices), approx_vertices
+
+    @staticmethod
     def percentile_height_mm(diff_mm, mask, percentile=HEIGHT_PERCENTILE):
         if not np.any(mask > 0):
             return 0.0
@@ -514,6 +539,21 @@ class OffcutScannerEngine:
             "height_mm_above_bed_p95": round(representative_height_mm, 2),
         }
 
+    @staticmethod
+    def mm_points_to_dxf(points_mm):
+        lines = [
+            "0", "SECTION",
+            "2", "ENTITIES",
+            "0", "LWPOLYLINE",
+            "8", "OFFCUT",
+            "90", str(len(points_mm)),
+            "70", "1",
+        ]
+        for x, y in points_mm:
+            lines.extend(["10", f"{float(x):.3f}", "20", f"{float(y):.3f}"])
+        lines.extend(["0", "ENDSEC", "0", "EOF"])
+        return "\n".join(lines) + "\n"
+
     def process_next_frame(self):
         if self.pipeline is None:
             raise RuntimeError("Camera is not started.")
@@ -550,14 +590,13 @@ class OffcutScannerEngine:
             contour = self.find_main_contour(mask)
 
             if contour is not None:
-                vertices_px = self.contour_vertices(contour)
+                shape_type, vertices_px = self.classify_and_select_vertices(contour)
                 corrected_vertices_px, vertex_depths_mm = self.compensate_vertices_to_bed_plane(
                     vertices_px,
                     current_depth_mm,
                     bed_depth_mm,
                 )
                 points_mm = self.transform_points_px_to_mm(corrected_vertices_px, self.H)
-                shape_type = self.classify_shape(points_mm)
                 payload = self.build_payload(
                     points_mm,
                     shape_type,
@@ -626,12 +665,15 @@ class OffcutScannerEngine:
         image_path = os.path.join(self.capture_dir, f"{ts}_preview.png")
         mask_path = os.path.join(self.capture_dir, f"{ts}_mask.png")
         json_path = os.path.join(self.capture_dir, f"{ts}_scan_mm.json")
+        dxf_path = os.path.join(self.capture_dir, f"{ts}_scan_mm.dxf")
         workshop_json_path = os.path.join(self.capture_dir, f"{ts}_workshop_hub.json")
 
         cv2.imwrite(image_path, scan_result["preview_image"])
         cv2.imwrite(mask_path, scan_result["mask_image"])
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(scan_result["payload"], f, indent=2)
+        with open(dxf_path, "w", encoding="utf-8") as f:
+            f.write(self.mm_points_to_dxf(scan_result["payload"]["vertices_mm"]))
         if workshop_bundle is not None:
             with open(workshop_json_path, "w", encoding="utf-8") as f:
                 json.dump(workshop_bundle, f, indent=2)
@@ -640,6 +682,7 @@ class OffcutScannerEngine:
             "image_path": image_path,
             "mask_path": mask_path,
             "json_path": json_path,
+            "dxf_path": dxf_path,
             "workshop_json_path": workshop_json_path if workshop_bundle is not None else None,
             "payload": scan_result["payload"],
         }
