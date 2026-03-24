@@ -19,7 +19,6 @@ DEPTH_SAMPLE_RADIUS_PX = 2
 MIN_BED_PLANE_SCALE = 0.85
 DEFAULT_BED_WIDTH_MM = 400.0
 DEFAULT_BED_HEIGHT_MM = 300.0
-RECTANGULARITY_THRESHOLD = 0.9
 
 
 @dataclass
@@ -440,30 +439,6 @@ class OffcutScannerEngine:
         return [[float(pt[0][0]), float(pt[0][1])] for pt in approx]
 
     @staticmethod
-    def min_area_rect_vertices(contour):
-        rect = cv2.minAreaRect(contour)
-        box = cv2.boxPoints(rect)
-        return [[float(pt[0]), float(pt[1])] for pt in box]
-
-    @staticmethod
-    def contour_rectangularity(contour):
-        contour_area = float(cv2.contourArea(contour))
-        if contour_area <= 0:
-            return 0.0
-
-        _, (w, h), _ = cv2.minAreaRect(contour)
-        rect_area = float(w * h)
-        if rect_area <= 0:
-            return 0.0
-        return contour_area / rect_area
-
-    def classify_and_select_vertices(self, contour):
-        approx_vertices = self.contour_vertices(contour)
-        if self.contour_rectangularity(contour) >= RECTANGULARITY_THRESHOLD:
-            return "RECT", self.min_area_rect_vertices(contour)
-        return self.classify_shape(approx_vertices), approx_vertices
-
-    @staticmethod
     def percentile_height_mm(diff_mm, mask, percentile=HEIGHT_PERCENTILE):
         if not np.any(mask > 0):
             return 0.0
@@ -590,13 +565,14 @@ class OffcutScannerEngine:
             contour = self.find_main_contour(mask)
 
             if contour is not None:
-                shape_type, vertices_px = self.classify_and_select_vertices(contour)
+                vertices_px = self.contour_vertices(contour)
                 corrected_vertices_px, vertex_depths_mm = self.compensate_vertices_to_bed_plane(
                     vertices_px,
                     current_depth_mm,
                     bed_depth_mm,
                 )
                 points_mm = self.transform_points_px_to_mm(corrected_vertices_px, self.H)
+                shape_type = self.classify_shape(points_mm)
                 payload = self.build_payload(
                     points_mm,
                     shape_type,
